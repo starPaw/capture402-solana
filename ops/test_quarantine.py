@@ -90,7 +90,9 @@ class ProjectionAdmissionTests(unittest.TestCase):
 @unittest.skipUnless(os.geteuid() == 0 and __import__('sys').platform == 'linux', 'NOT RUN: disposable Linux root required')
 class QuarantineTests(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory(prefix='b2-test-', dir='/opt')
+        # Hosted runners may make /opt group-writable. Keep the real parent
+        # trust check intact and place root-only custody beneath root's home.
+        self.tmp = tempfile.TemporaryDirectory(prefix='b2-test-', dir='/root')
         self.root = Path(self.tmp.name)
         self.admission = self.root / 'admission'
         self.admission.mkdir(mode=0o700)
@@ -117,6 +119,17 @@ class QuarantineTests(unittest.TestCase):
         for p in reversed(self.patches):
             p.stop()
         self.tmp.cleanup()
+
+    def test_group_writable_ancestor_refuses_before_record_creation(self):
+        parent = self.root / 'unsafe-parent'
+        parent.mkdir(mode=0o700)
+        child = parent / 'custody'
+        child.mkdir(mode=0o700)
+        parent.chmod(0o770)
+        target = child / 'retained.json'
+        with self.assertRaisesRegex(RuntimeError, 'QUARANTINE_REFUSED'):
+            q.exclusive(target, b'{"retained":"UNKNOWN"}\n')
+        self.assertFalse(target.exists())
 
     def test_ordered_attestations_and_immutable_baseline(self):
         self.t.enter()
