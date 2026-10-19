@@ -39,14 +39,43 @@ export function selectedPaymentProfile(selection=process.env.SAC006_PAYMENT_PROF
   if(selection!==CIRCLE_PROFILE.id)throw Error('unknown payment profile');
   circleApproval();return CIRCLE_PROFILE;
 }
-export const circleApproval=()=>validateCircleApproval(operationalValue('circleUsdcDemoProfile'));
+// This selector chooses between fixed installation slots, never policy paths or authority.
+// Unset retains the original E2E slot and all its existing hashes and directory identities.
+export function circleInstallation(): 'e2e'|'main' {
+  const selection=process.env.SAC006_CIRCLE_INSTALLATION;
+  if(selection===undefined || selection==='e2e')return 'e2e';
+  if(selection==='main')return 'main';
+  throw Error('unknown Circle installation');
+}
+export function circleOperationalValue<T=unknown>(name:'DemoProfile'|'Custody'|'AdmissionContracts'):T {
+  return operationalValue<T>(`circleUsdc${circleInstallation()==='main'?'Main':''}${name}`);
+}
+export const circleNamespacePrefix=()=>circleInstallation()==='main'?'/var/lib/capture402/circle-usdc-v1/':'/var/lib/capture402-e2e/circle-usdc-v1/';
+function circleApprovals() {
+  const data=loadOperationalData();
+  const values=(['e2e','main'] as const).flatMap(installation=>{
+    const value=data[`circleUsdc${installation==='main'?'Main':''}DemoProfile`];
+    return value===undefined?[]:[{installation,approval:validateCircleApproval(value)}];
+  });
+  if(values.length===2) {
+    const [a,b]=values.map(v=>v.approval);
+    if(a!.origin===b!.origin || [a!.treasury,a!.merchant].some(key=>key===b!.treasury || key===b!.merchant))throw Error('Circle installations require distinct origins and custody keys');
+  }
+  return values;
+}
+export function circleApproval():Readonly<CircleApproval> {
+  const approved=circleApprovals().find(v=>v.installation===circleInstallation());
+  if(!approved)throw Error('missing approved Circle installation');
+  return approved.approval;
+}
 // Treasury identity comes from installation authority, even when profile flags are absent.
 // Do not catch policy-reader errors: unavailable/malformed trust must refuse startup.
 export function requireProfileForTreasury(profile:PaymentProfile,treasury:Address):void {
-  const value=loadOperationalData().circleUsdcDemoProfile;
-  if(value===undefined)return;
-  const approved=validateCircleApproval(value);
-  if(treasury===approved.treasury && profile!==CIRCLE_PROFILE)throw Error('approved Circle treasury requires the Circle payment profile');
+  for(const {installation,approval} of circleApprovals()) {
+    if(treasury!==approval.treasury)continue;
+    if(profile!==CIRCLE_PROFILE)throw Error('approved Circle treasury requires the Circle payment profile');
+    if(installation!==circleInstallation())throw Error('Circle treasury belongs to a different installation');
+  }
 }
 export function validateProfileRuntime(profile:PaymentProfile,runtime:{network:string;programId:Address;asset:Address;feePayer:Address;server:{address:Address};origin:string}) {
   if(profile.id!==CIRCLE_PROFILE.id) {if(profile!==LEGACY_PROFILE)throw Error('unsupported payment profile');return;}
@@ -59,6 +88,6 @@ export function requireCircleRpc(endpoint:string) {
   if(url.protocol!=='https:' || !url.hostname.endsWith('.quiknode.pro') || url.username || url.password || url.hash)throw Error('Circle demo requires its approved QuickNode HTTPS RPC');
 }
 export function requireCircleNamespace(path:string) {
-  const prefix='/var/lib/capture402-e2e/circle-usdc-v1/';
+  const prefix=circleNamespacePrefix();
   if(!path.startsWith(prefix) || path.split('/').some(v=>v==='.'||v==='..') || path.includes('//') || realpathSync(path)!==path)throw Error('Circle demo requires isolated circle-usdc-v1 custody');
 }
