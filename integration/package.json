@@ -10,6 +10,7 @@
   "scripts": {
     "typecheck": "tsc -p .",
     "test": "vitest run",
+    "test:recovery:offline": "vitest run test/mvp-recovery-offline.test.ts test/reclaim.test.ts test/reclaim-offer.test.ts test/payer-recovery.test.ts test/payer-recovery-sbf.test.ts test/payer-recovery-races.test.ts test/payer-recovery-crash.test.ts test/rpc-recovery-identity.test.ts",
     "test:reclaim": "vitest run test/reclaim-offer.test.ts test/reclaim.test.ts test/rpc-ledger.test.ts test/rpc-recovery-identity.test.ts",
     "devnet": "node --experimental-strip-types src/devnet-server.ts",
     "restaurant": "node --experimental-strip-types src/restaurant-server.ts",
