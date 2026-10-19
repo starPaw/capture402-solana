@@ -89,7 +89,7 @@ export function merchantServer(merchant) {
 }
 
 async function main() {
-  const payments = await paymentClient(process.env);
+  const payments = await paymentClient(process.env, 'merchant');
   const store = new Store(process.env.MERCHANT_STATE_DIR);
   const merchant = new Merchant({ payments, store, payer: process.env.REPORT_PAYER, merchant: process.env.REPORT_MERCHANT });
   const server = merchantServer(merchant);

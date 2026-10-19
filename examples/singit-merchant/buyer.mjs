@@ -43,15 +43,19 @@ export async function buy({ payments, merchant, store, intent, mandateId, payer,
   } finally { activeStores.delete(store); }
 }
 
+export function merchantProcessEnv(source) {
+  // The child receives only its own role token, never buyer or human credentials.
+  return Object.fromEntries(['PATH', 'HOME', 'PAYMENT_PROFILE', 'PAYMENT_MCP_URL', 'MERCHANT_STATE_DIR', 'REPORT_PAYER', 'REPORT_MERCHANT', 'SINGIT_MERCHANT_TOKEN']
+    .filter(key => source[key] !== undefined).map(key => [key, source[key]]));
+}
+
 async function main() {
   const [inputPath, mandateId, intent] = process.argv.slice(2);
   if (!inputPath || !mandateId || !intent) throw Error('INPUT_MANDATE_INTENT_REQUIRED');
-  const payments = await paymentClient(process.env);
+  const payments = await paymentClient(process.env, 'buyer');
   const store = new Store(process.env.BUYER_STATE_DIR);
   const merchant = new Client({ name: 'expense-report-buyer', version: '0.1.0' });
-  // The merchant subprocess receives only its mock endpoint/roles/store, no wallet or human secrets.
-  const env = Object.fromEntries(['PATH', 'HOME', 'PAYMENT_PROFILE', 'PAYMENT_MCP_URL', 'MERCHANT_STATE_DIR', 'REPORT_PAYER', 'REPORT_MERCHANT']
-    .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
+  const env = merchantProcessEnv(process.env);
   try {
     await merchant.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('./merchant.mjs', import.meta.url))], env, stderr: 'pipe' }));
     const result = await buy({ payments, merchant, store, intent, mandateId, payer: process.env.REPORT_PAYER,

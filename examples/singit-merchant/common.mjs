@@ -119,6 +119,8 @@ export class Store {
 }
 
 export async function tool(client, name, args) {
+  if (['hold', 'capture', 'release'].includes(name) && (typeof args?.idempotencyKey !== 'string' ||
+      !/^[A-Za-z0-9._:-]{1,128}$/.test(args.idempotencyKey))) throw Error('IDEMPOTENCY_KEY_REQUIRED');
   const result = await client.callTool({ name, arguments: args });
   const data = result.structuredContent ?? JSON.parse(result.content?.find(item => item.type === 'text')?.text ?? '{}');
   if (result.isError || data.ok !== true) throw Error(typeof data.code === 'string' && /^[A-Z_]{1,80}$/.test(data.code) ? data.code : 'MCP_REFUSED');
@@ -126,13 +128,18 @@ export async function tool(client, name, args) {
 }
 
 /** Deliberately refuse devnet until the upstream safety issues are accepted. */
-export async function paymentClient(env) {
+export async function paymentClient(env, role) {
   if (env.PAYMENT_PROFILE !== 'mock') throw Error('LIVE_BLOCKED_PENDING_MVP_01_TO_06');
+  if (role !== 'buyer' && role !== 'merchant') throw Error('PAYMENT_ROLE_REQUIRED');
+  const token = env[role === 'buyer' ? 'SINGIT_BUYER_TOKEN' : 'SINGIT_MERCHANT_TOKEN'];
+  if (typeof token !== 'string' || !/^[\x21-\x7e]{16,4096}$/.test(token)) throw Error('PAYMENT_TOKEN_REQUIRED');
+  if (env.SINGIT_BUYER_TOKEN === env.SINGIT_MERCHANT_TOKEN) throw Error('SEPARATE_PAYMENT_TOKENS_REQUIRED');
   const url = new URL(env.PAYMENT_MCP_URL);
   if (url.protocol !== 'http:' || url.hostname !== '127.0.0.1' || url.pathname !== '/mcp' || url.username || url.password || url.search || url.hash) throw Error('LOOPBACK_MOCK_REQUIRED');
-  const state = await fetch(new URL('/api/state', url), { redirect: 'error', signal: AbortSignal.timeout(5000) });
+  const headers = { Authorization: `Bearer ${token}` };
+  const state = await fetch(new URL('/api/state', url), { headers, redirect: 'error', signal: AbortSignal.timeout(5000) });
   if (!state.ok || (await state.json()).backend !== 'mock') throw Error('MOCK_UPSTREAM_REQUIRED');
   const client = new Client({ name: 'capture402-merchant-example', version: '0.1.0' });
-  try { await client.connect(new StreamableHTTPClientTransport(url)); return client; }
+  try { await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers, redirect: 'error' } })); return client; }
   catch { await client.close().catch(() => {}); throw Error('MCP_UNAVAILABLE'); }
 }
