@@ -45,18 +45,12 @@ jobs:
           echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
       - name: Build SBF from current source
         run: cargo-build-sbf --tools-version v1.53 --arch v0 -- --locked
-      - name: Verify program and local operational guards
+      - name: Verify program and source guards
         run: |
           cargo test --locked --test sac001 --test sac002 --test sac003
           cargo clippy --locked --all-targets -- -D warnings
           bash -n deploy.sh
-          python3 -B -m unittest discover -s ops -p 'test_*.py'
           python3 -B ops/check_local_paths.py --staged
-      - name: Exercise Linux root and boot gates
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes nginx
-          sudo env GITHUB_ACTIONS=true CAPTURE402_SYSTEMD_TEST=1 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s ops -p 'test_*.py' -v
       - name: Verify source remained unchanged
         run: git diff --exit-code
       - name: Pass exact built SBF to integration tests
@@ -114,5 +108,10 @@ jobs:
           # Real custody transfer requires root only on the disposable hosted runner.
           (cd integration && sudo env PATH="$PATH" node node_modules/vitest/vitest.mjs run test/isolation-custody.test.ts)
           npm run build:wallet --prefix integration
-          python3 -B -m unittest discover -s ops -p 'test_reconcile_wire.py' -v
+          # Signed-wire operator fixtures need the installed Solana packages.
+          python3 -B -m unittest discover -s ops -p 'test_*.py' -v
+          git diff --exit-code
+      - name: Exercise Linux root and boot gates
+        run: |
+          sudo env PATH="$PATH" GITHUB_ACTIONS=true CAPTURE402_SYSTEMD_TEST=1 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s ops -p 'test_*.py' -v
           git diff --exit-code
