@@ -1,0 +1,11 @@
+# Runtime security boundaries
+
+The reference runtime enforces native payer/merchant signing, immutable payment terms, exact-message receipt authentication, nonce/PDA identity and stale H/F fences. A payer session or wallet connection is not merchant authority. Facilitator bearer authentication and the merchant/mint allowlist run before sponsor signing. Public merchant demo consent is scoped to one original order, fixed actions, origin, payer, terms and deployment; the on-chain merchant remains the signer.
+
+Wallet transport pins Devnet and verifies the original message and expected signature slots. The Solflare bridge accepts only the pinned upstream origin and the current connected iframe; changed account, origin, request or message is refused. Linked wallet dependency licenses must remain with the rebuilt bundle.
+
+A pending x402 receipt requires a nonempty sponsor signature over the exact original message. If its signature cannot be authenticated or the HTTP response is lost/malformed, the application reports UNKNOWN without fabricating a receipt. It retains the original wire and all durable reservations. No timeout, missing history or restart implies non-execution, and no automated retry, re-signing, blockhash replacement or lock deletion is permitted.
+
+The accepted deployment hash and operational dispositions are supplied by a fixed root-trusted installation policy, separate from caller-controlled records and environment variables. Runtime checks root ownership, links, ancestry and file identity around policy reading; the deployment record still undergoes full schema and finalized executable checks. Test-only synthetic fixtures do not establish acceptance of a deployment.
+
+Regression suites cover authentication/signature substitution, stale pair/replay, malformed metadata, concurrency, durable custody, crash and restart boundaries, fee readiness, original-order session restoration, paid-artifact proof withholding and exact route isolation. Linux-specific filesystem, systemd and fault-injection tests require the documented disposable environment. Passing deterministic tests is not a production security audit, live finality/host proof or independent human acceptance. Run final checks against the exact candidate and separately assess installation data and any live activation.

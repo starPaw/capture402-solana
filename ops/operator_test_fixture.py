@@ -1,0 +1,9 @@
+"""Explicit in-process fixtures for offline operator tests; never used by live entrypoints."""
+from unittest import mock
+import deployment_config
+import os
+FIXTURE = {'schema': 1, 'repository': 'starPaw/capture402-solana', 'repositoryId': 123456789, 'repositoryPrivate': False, 'deploymentRecordSha256': 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff', 'deploymentSshTarget': 'operator@host.invalid', 'nodeBinarySha256': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'nodeArchiveSha256': 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'dependencyArchiveSha256': 'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', 'dependencyInventorySha256': 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee', 'nodeArchiveDirectory': 'node-fixture', 'stoppedP2Source': 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'stoppedP2EntrypointSha256': 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 'stoppedP2ManifestSha256': 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc', 'providerHost': 'rpc.provider.invalid', 'campaignReference': 'synthetic-owner-policy', 'signerCustody': {'sponsor': {'uid': 989, 'gid': 986}, 'mint': {'uid': 0, 'gid': 0}}, 'publicOrigin': 'https://example.invalid', 'devOrigin': 'https://dev.example.invalid', 'e2eOrigin': 'https://e2e.example.invalid', 'paidOrigin': 'https://paid.example.org', 'sponsorAddress':'synthetic-sponsor', 'mintAddress':'synthetic-mint','browserAddress':'synthetic-browser','paidPrekeySource':'a'*40, 'paidMint':'synthetic-mint', 'programId':'synthetic-program', 'programData':'synthetic-program-data', 'acceptedExecutableSha256':'b'*64, 'acceptedExecutableSizeBytes':128, 'nodeSourceUid':os.getuid()}
+def install():
+    patch = mock.patch.object(deployment_config, 'load', return_value=FIXTURE)
+    patch.start()
+    return patch

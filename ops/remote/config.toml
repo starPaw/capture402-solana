@@ -1,0 +1,17 @@
+# Example sandbox boundary. Render only after reviewing the actual host inventory.
+# No credential paths, login material or internal development instructions are supplied.
+approval_policy = "on-request"
+default_permissions = "development"
+[permissions.development]
+description = "Public source checkout; live configuration and economic state are inaccessible."
+extends = ":workspace"
+[permissions.development.filesystem]
+"/srv/capture402/workspace" = "write"
+"/etc/capture402" = "deny"
+"/etc/capture402-dev" = "deny"
+"/etc/capture402-e2e" = "deny"
+"/var/lib/capture402-dev" = "deny"
+"/var/lib/capture402-e2e" = "deny"
+"/opt/capture402" = "deny"
+[permissions.development.network]
+enabled = false

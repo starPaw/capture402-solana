@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Capture402 — A fixed budget. A deadline the service can't extend.</title>
+  <meta name="description" content="Solana escrow for time-bounded service payments. Explore a fixed budget, a capture deadline and explicit payer recovery of unspent funds.">
+  <meta name="robots" content="noindex,nofollow">
+  <meta property="og:title" content="Capture402 — A fixed budget. A deadline the service can't extend.">
+  <link rel="stylesheet" href="/assets/homepage.css"><script src="/assets/homepage.js" defer></script>
+</head>
+<body class="c402-home-page">
+<div id="c402-home-root">
+  <a class="c402-home-skip" href="#content">Skip to content</a>
+  <header class="c402-home-wrap c402-home-header">
+    <a class="c402-home-brand" href="/" aria-label="Capture402 home"><span aria-hidden="true">[■]</span> Capture402</a>
+    <nav class="c402-home-desktop-nav" aria-label="Main navigation"><a href="#demo">Example</a><a href="/integrate">Integration guide</a><a href="/evidence">Evidence</a><a href="#try-devnet">Try on Devnet</a></nav>
+    <details class="c402-home-menu"><summary>Menu</summary><nav aria-label="Mobile navigation"><a href="#demo">Example</a><a href="/integrate">Integration guide</a><a href="/evidence">Evidence</a><a href="#try-devnet">Try on Devnet</a></nav></details>
+  </header>
+  <main id="content" tabindex="-1">
+    <div class="c402-home-wrap c402-home-hero-grid">
+      <section class="c402-home-hero" aria-labelledby="hero-title">
+        <p class="c402-home-eyebrow">Solana escrow for time-bounded service payments.</p>
+        <h1 id="hero-title">A fixed budget.<br>A deadline the service can't extend.</h1>
+        <p class="c402-home-lead">Authorize a maximum and a capture deadline. The service can collect in parts before it expires. At or after the deadline, you can reclaim the unspent balance without the merchant or facilitator.</p>
+        <div class="c402-home-actions"><a class="c402-home-button c402-home-primary" href="#demo" data-explore>Explore the example</a><a class="c402-home-button" href="/integrate">Integration guide</a></div>
+        <p class="c402-home-note c402-home-qualification">Reclaim requires your signed transaction, network access, transaction fees and a usable token account. Expiry does not move funds automatically.</p>
+      </section>
+      <section class="c402-home-example" id="demo" aria-labelledby="example-title">
+        <span id="how-it-works" class="c402-home-anchor" aria-hidden="true"></span>
+        <p class="c402-home-mode">Interactive illustration — no wallet or transactions.</p>
+        <h2 id="example-title" tabindex="-1">What happens if the service stops?</h2>
+        <p class="c402-home-note">Follow a fictional data-processing job with a budget of 100 example units. This is a payment example, not a working service.</p>
+        <div class="c402-home-outcomes" role="group" aria-label="Example outcome" data-controls hidden><button type="button" data-outcome="stops" aria-pressed="true">Service stops early</button><button type="button" data-outcome="completes" aria-pressed="false">Job completes</button></div>
+        <dl class="c402-home-terms"><div><dt>Original budget</dt><dd>100 example units</dd></div><div><dt>Capture deadline</dt><dd>Example minute 10</dd></div></dl>
+        <p class="c402-home-note">These terms stay fixed throughout the example.</p>
+        <div data-interactive hidden>
+          <div class="c402-home-clock"><span>Example minute <strong data-time>0</strong></span><span>Deadline <strong>10</strong></span></div>
+          <progress data-time-axis max="10" value="0" aria-label="Example time, deadline at minute 10">0 of 10</progress>
+          <svg class="c402-home-bar" data-model-bar viewBox="0 0 100 6" preserveAspectRatio="none" aria-hidden="true"><rect class="c402-home-unreserved" width="100" height="6"/><rect class="c402-home-paid" data-segment="paid" width="0" height="6"/><rect class="c402-home-held" data-segment="held" width="0" height="6"/><rect class="c402-home-returned" data-segment="returned" width="0" height="6"/></svg>
+          <dl class="c402-home-totals"><div><dt>Paid to service</dt><dd data-total="paid">0</dd></div><div><dt>Held in escrow</dt><dd data-total="held">0</dd></div><div><dt>Returned unused</dt><dd data-total="returned">0</dd></div></dl>
+          <div class="c402-home-state"><p class="c402-home-eyebrow" data-state-label>Simulation · Step 1 of 6</p><p data-state-message></p><p class="c402-home-reclaim" data-reclaim hidden>Requires a payer-signed transaction; the deadline does not move funds automatically. Already-paid funds stay with the service.</p><p class="c402-home-note">Represented actor: <strong data-actor>Payer</strong></p><div data-next-slot></div></div>
+          <div class="c402-home-example-footer"><button type="button" data-reset>Restart example</button><span class="c402-home-note">Local example time. No live timer.</span></div>
+        </div>
+        <div data-fallback><p>Read either complete simulation below. Each action is separate; advancing time transfers no funds. At the deadline, a payer-signed transaction, network access, fees and a usable token account are still required. Already-paid funds stay with the service.</p><section data-path="stops" aria-labelledby="stops-title"><h3 id="stops-title">Service stops early</h3><ol>
+<li data-minute="0" data-paid="0" data-held="0" data-returned="0" data-actor="Payer" data-action="Simulate authorization"><p class="c402-home-note">Simulation · Example minute 0 · Deadline: minute 10</p><p data-message>No example funds reserved yet. Original budget: 100.</p><p>0 paid / 0 held / 0 returned unused.</p><p class="c402-home-note">Payer: Simulate authorization.</p></li>
+<li data-minute="0" data-paid="0" data-held="100" data-returned="0" data-actor="Merchant" data-action="Simulate capture 40"><p class="c402-home-note">Simulation · Example minute 0 · Deadline: minute 10</p><p data-message>100 is moved into escrow, not paid to the service.</p><p>0 paid / 100 held / 0 returned unused.</p><p class="c402-home-note">Merchant: Simulate capture 40.</p></li>
+<li data-minute="0" data-paid="40" data-held="60" data-returned="0" data-actor="Visitor · time only, no transfer" data-action="Advance example time"><p class="c402-home-note">Simulation · Example minute 0 · Deadline: minute 10</p><p data-message>The service receives 40 under the authorization.</p><p>40 paid / 60 held / 0 returned unused.</p><p class="c402-home-note">Visitor · time only, no transfer: Advance example time.</p></li>
+<li data-minute="5" data-paid="40" data-held="60" data-returned="0" data-actor="Visitor · time only, no transfer" data-action="Advance example time"><p class="c402-home-note">Simulation · Example minute 5 · Deadline: minute 10</p><p data-message>The service has stopped. The remaining 60 is still held. Payer reclaim is not eligible before the deadline.</p><p>40 paid / 60 held / 0 returned unused.</p><p class="c402-home-note">Visitor · time only, no transfer: Advance example time.</p></li>
+<li data-minute="10" data-paid="40" data-held="60" data-returned="0" data-actor="Payer" data-action="Simulate payer reclaim 60"><p class="c402-home-note">Simulation · Example minute 10 · Deadline: minute 10</p><p data-message>Capture is now disallowed. The payer can reclaim 60; reaching the deadline has moved no funds.</p><p>40 paid / 60 held / 0 returned unused.</p><p class="c402-home-note">Payer: Simulate payer reclaim 60.</p></li>
+<li data-minute="10" data-paid="40" data-held="0" data-returned="60" data-actor="Visitor" data-action="Restart example"><p class="c402-home-note">Simulation · Example minute 10 · Deadline: minute 10</p><p data-message>The payer receives the unspent 60. The 40 already paid stays with the service.</p><p>40 paid / 0 held / 60 returned unused.</p><p class="c402-home-note">Visitor: Restart example.</p></li>
+</ol></section>
+<section data-path="completes" aria-labelledby="completes-title"><h3 id="completes-title">Job completes</h3><ol>
+<li data-minute="0" data-paid="0" data-held="0" data-returned="0" data-actor="Payer" data-action="Simulate authorization"><p class="c402-home-note">Simulation · Example minute 0 · Deadline: minute 10</p><p data-message>No example funds reserved yet. Original budget: 100.</p><p>0 paid / 0 held / 0 returned unused.</p><p class="c402-home-note">Payer: Simulate authorization.</p></li>
+<li data-minute="0" data-paid="0" data-held="100" data-returned="0" data-actor="Merchant" data-action="Simulate capture 40"><p class="c402-home-note">Simulation · Example minute 0 · Deadline: minute 10</p><p data-message>100 is moved into escrow, not paid to the service.</p><p>0 paid / 100 held / 0 returned unused.</p><p class="c402-home-note">Merchant: Simulate capture 40.</p></li>
+<li data-minute="0" data-paid="40" data-held="60" data-returned="0" data-actor="Visitor · time only, no transfer" data-action="Advance example time"><p class="c402-home-note">Simulation · Example minute 0 · Deadline: minute 10</p><p data-message>The service receives 40 under the authorization.</p><p>40 paid / 60 held / 0 returned unused.</p><p class="c402-home-note">Visitor · time only, no transfer: Advance example time.</p></li>
+<li data-minute="5" data-paid="40" data-held="60" data-returned="0" data-actor="Merchant" data-action="Simulate capture 25"><p class="c402-home-note">Simulation · Example minute 5 · Deadline: minute 10</p><p data-message>In this fictional story, the job completes before the deadline. The program does not verify that work.</p><p>40 paid / 60 held / 0 returned unused.</p><p class="c402-home-note">Merchant: Simulate capture 25.</p></li>
+<li data-minute="5" data-paid="65" data-held="35" data-returned="0" data-actor="Merchant" data-action="Simulate merchant release 35"><p class="c402-home-note">Simulation · Example minute 5 · Deadline: minute 10</p><p data-message>A second merchant capture pays 25. The unused 35 remains held.</p><p>65 paid / 35 held / 0 returned unused.</p><p class="c402-home-note">Merchant: Simulate merchant release 35.</p></li>
+<li data-minute="5" data-paid="65" data-held="0" data-returned="35" data-actor="Visitor" data-action="Restart example"><p class="c402-home-note">Simulation · Example minute 5 · Deadline: minute 10</p><p data-message>The merchant releases the unused 35 before the deadline. This is not a refund of captured funds.</p><p>65 paid / 0 held / 35 returned unused.</p><p class="c402-home-note">Visitor: Restart example.</p></li>
+</ol></section>
+</div>
+        <p class="c402-home-boundary">The merchant chooses charges within the agreed limit. Capture402 does not verify usage or service delivery.</p>
+        <p class="c402-home-sr" role="status" aria-live="polite" aria-atomic="true" data-announcement></p>
+      </section>
+    </div>
+    <section class="c402-home-wrap c402-home-section" id="try-devnet" aria-labelledby="devnet-title">
+      <p class="c402-home-eyebrow">The next step / A separate experience</p>
+      <h2 id="devnet-title">Try on Devnet</h2>
+      <p>Live Devnet — test tokens. You need a compatible wallet, the configured test token and Devnet SOL for payer reclaim fees. Test tokens have no monetary value. Availability and token supply are limited; each signing action is explicit.</p>
+      <p class="c402-home-note">The Capture402 payment lab guides a fixed test-token budget through explicit capture, release and payer reclaim steps on Devnet. If the lab is unavailable, the wallet-free illustration above remains usable. Neither experience performs compute work or delivers a paid report.</p>
+      <a class="c402-home-button" href="/customer">Try on Devnet ↗</a>
+    </section>
+    <section class="c402-home-wrap c402-home-section" aria-labelledby="fit-title">
+      <p class="c402-home-eyebrow">Choose the terms</p>
+      <h2 id="fit-title">Choose the payment agreement your application needs.</h2>
+      <p>Evaluate Capture402 when you need one fixed budget and capture deadline, with payer recovery of the unspent balance afterward. If the charge is already known, consider immediate payment. If spending needs to keep growing or streaming, compare payment-channel and session designs.</p>
+      <p class="c402-home-note">Partial collection and unused-balance recovery are not unique to Capture402. Compare the exact authority, timing and costs of each implementation in the integration guide.</p>
+    </section>
+    <section class="c402-home-wrap c402-home-section" id="integration" aria-labelledby="integration-title">
+      <span id="developers" class="c402-home-anchor" aria-hidden="true"></span>
+      <p class="c402-home-eyebrow">Integration preview / Reference implementation</p>
+      <h2 id="integration-title">Your application owns the work. The program enforces the payment terms.</h2>
+      <p>The payer authorizes the hold. The merchant signs each capture or unused-balance release. The payer signs reclaim at or after the capture deadline. Your application decides what work to perform and when to charge.</p>
+      <p>A funded authorization cannot be topped up or extended. New terms require a new authorization. Capture ends strictly before the stored deadline; payer reclaim opens at that deadline for the remaining hold.</p>
+      <h3>A separate paid-report reference</h3>
+      <p>The reference paid report uses synthetic data and fixed charges of 40 and 25 from a 100-token hold, then releases 35. Both artifacts are withheld until every payment step is proven and the complete response is durably saved. It is separate from the payment lab.</p>
+      <p>Completed-response retrieval is read-only. An unfinished run can block the isolated instance across restarts; there is no automatic retry, refund or resume. Preserve original records when an outcome is pending or UNKNOWN. A timeout does not establish failure.</p>
+      <h3>Assets, costs and recovery</h3>
+      <p>Classic non-native SPL Token assets only; Token-2022 and wrapped SOL are outside this profile. Protocol fees are zero; network transaction fees and permanent payment/vault account rent remain.</p>
+      <p>The program allows direct payer reclaim without merchant or facilitator participation. The browser still uses application routes to prepare and submit reclaim. With that server unavailable, use the existing standalone wallet-signed tooling; payer consent, configured trusted RPC, fees, usable accounts and original journal custody are still required.</p>
+      <details><summary>Refunds are a separate operation</summary><p>A refund returns already-captured funds from the merchant. It requires merchant consent, liquidity and an open refund window. Releasing unused escrow is a different operation.</p></details>
+      <p class="c402-home-note">The SVM auth-capture profile is a local extension, not a published drop-in SDK or a claim of standard SVM interoperability.</p>
+      <p><a class="c402-home-button" href="/integrate">Read the integration guide and comparison</a></p>
+      <div class="c402-home-actions"><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/README.md">Reference setup ↗</a><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/README.md#wallet-signed-direct-reclaim">Standalone reclaim guide ↗</a><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/README.md">Paid-report guide ↗</a></div>
+    </section>
+    <section class="c402-home-wrap c402-home-section" id="evidence"><h2>Inspect the implementation.</h2><p>The public source includes the program, reference integration, operator tooling and local checks.</p><a class="c402-home-button" href="/evidence">Verification scope and limits</a></section>
+<section class="c402-home-wrap c402-home-section" id="latest-demo"><h2>Try the configured payment lab.</h2><p>The lab requires an independently reviewed deployment and private operational configuration. The illustration above is a simulation; it does not sign or send transactions.</p><a class="c402-home-button" href="/customer">Open payment lab</a></section>
+<section class="c402-home-wrap c402-home-proof c402-home-section" id="proof"><h2>What can be checked locally?</h2><details><summary>Verification layers and their limits</summary><table class="c402-home-evidence"><thead><tr><th>Layer</th><th>Scope</th><th>Limit</th></tr></thead><tbody>
+<tr><td>Program</td><td>Instruction, authority and balance invariants</td><td>Local tests do not establish deployed identity</td></tr>
+<tr><td>Integration</td><td>Consent, replay prevention and recovery refusals</td><td>Fixtures are not live settlement receipts</td></tr>
+<tr><td>Browser</td><td>Navigation, accessibility and interrupted flows</td><td>DOM fixtures do not approve real wallet requests</td></tr>
+<tr><td>Operations</td><td>Configuration, release guards and rollback controls</td><td>Deployment and upgrade authority require separate review</td></tr>
+</tbody></table></details><p>No current deployment, production readiness or independent security-audit claim is made.</p><a href="/integrate">Integration guide</a></section>
+</main>
+  <footer class="c402-home-wrap c402-home-footer">
+    <a class="c402-home-brand" href="/">Capture402</a>
+    <p class="c402-home-note">Experimental implementation. The SVM auth-capture profile is a local extension, not a published drop-in SDK or a claim of standard SVM interoperability. Customer demand and production readiness are not established.</p>
+    <nav aria-label="Footer navigation"><a href="/integrate">Integration guide</a><a href="/evidence">Verification scope</a><a href="/customer">Previous order history ↗</a></nav>
+  </footer>
+</div>
+</body>
+</html>

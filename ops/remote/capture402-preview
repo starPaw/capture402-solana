@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# Local unconfigured presentation preview; no private deployment record or credentials.
+set -euo pipefail
+repo=${CAPTURE402_SOURCE_CHECKOUT:?Set the reviewed public source checkout}
+repo=$(realpath "$repo")
+[[ -f $repo/integration/package.json ]] || exit 2
+case "${1:-status}" in
+  start)
+    if tmux has-session -t capture402-preview 2>/dev/null; then printf 'Preview already running.\n'; exit 0; fi
+    tmux new-session -d -s capture402-preview -c "$repo/integration" \
+      "env -i PATH=/usr/local/bin:/usr/bin:/bin node --experimental-strip-types src/presentation-preview.ts"
+    ready=0
+    for attempt in {1..40}; do
+      tmux has-session -t capture402-preview 2>/dev/null || break
+      if curl --fail --silent --max-time 1 http://127.0.0.1:18788/api/config | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["configured"] is False and d["network"] == "unconfigured"' 2>/dev/null; then ready=1; break; fi
+      sleep 0.1
+    done
+    [[ $ready == 1 ]] || { tmux kill-session -t capture402-preview 2>/dev/null || true; printf 'Preview startup failed.\n' >&2; exit 1; }
+    printf 'Preview bound to loopback port 18788. Forward explicitly over SSH.\n'
+    ;;
+  stop) tmux kill-session -t capture402-preview ;;
+  status) tmux has-session -t capture402-preview; curl --silent --show-error --max-time 5 http://127.0.0.1:18788/api/config ;;
+  *) printf 'Usage: capture402-preview start|stop|status\n' >&2; exit 2 ;;
+esac

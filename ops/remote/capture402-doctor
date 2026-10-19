@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Read-only local development toolchain inspection. No provider call or login inspection.
+set -euo pipefail
+repo=${CAPTURE402_SOURCE_CHECKOUT:?Set the reviewed public source checkout}
+repo=$(realpath "$repo")
+[[ -f $repo/integration/package.json ]] || exit 2
+node --version
+npm --version
+git -C "$repo" status --short --branch
+git -C "$repo" rev-parse HEAD
+printf 'Private operational configuration is not a development dependency.\n'

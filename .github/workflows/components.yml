@@ -1,0 +1,118 @@
+name: Components
+run-name: 'Critical checks: ${{ github.ref_name }} - ${{ inputs.reason }}'
+on:
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: 'Critical reason: release, security review, or Linux-only validation'
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: components-${{ github.ref }}-${{ github.sha }}
+  cancel-in-progress: true
+jobs:
+  components:
+    name: SBF build and component checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Verify public repository identity
+        env:
+          REPOSITORY_NAME: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+          EXPECTED_ID: ${{ vars.CAPTURE402_REPOSITORY_ID }}
+        run: |
+          test "$REPOSITORY_NAME" = "starPaw/capture402-solana"
+          [[ "$EXPECTED_ID" =~ ^[1-9][0-9]*$ ]]
+          test "$REPOSITORY_ID" = "$EXPECTED_ID"
+          test "$REPOSITORY_PRIVATE" = "false"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Install pinned host Rust and SBF CLI
+        run: |
+          rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
+          curl --fail --location --retry 3 https://github.com/anza-xyz/agave/releases/download/v2.2.14/solana-release-x86_64-unknown-linux-gnu.tar.bz2 --output "$RUNNER_TEMP/solana-release.tar.bz2"
+          echo "b5dadeb39ab7f31062c599ead459b9d809dd9d709365df6cb5943828b7693b36  $RUNNER_TEMP/solana-release.tar.bz2" | sha256sum --check
+          tar -xjf "$RUNNER_TEMP/solana-release.tar.bz2" -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
+      - name: Build SBF from current source
+        run: cargo-build-sbf --tools-version v1.53 --arch v0 -- --locked
+      - name: Verify program and local operational guards
+        run: |
+          cargo test --locked --test sac001 --test sac002 --test sac003
+          cargo clippy --locked --all-targets -- -D warnings
+          bash -n deploy.sh
+          python3 -B -m unittest discover -s ops -p 'test_*.py'
+          python3 -B ops/check_local_paths.py --staged
+      - name: Exercise Linux root and boot gates
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes nginx
+          sudo env GITHUB_ACTIONS=true CAPTURE402_SYSTEMD_TEST=1 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s ops -p 'test_*.py' -v
+      - name: Verify source remained unchanged
+        run: git diff --exit-code
+      - name: Pass exact built SBF to integration tests
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tested-sbf
+          path: target/deploy/svm_auth_capture.so
+          if-no-files-found: error
+          retention-days: 7
+  integration:
+    name: x402 integration, typecheck and wallet build
+    needs: components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Verify public repository identity
+        env:
+          REPOSITORY_NAME: ${{ github.repository }}
+          REPOSITORY_ID: ${{ github.repository_id }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+          EXPECTED_ID: ${{ vars.CAPTURE402_REPOSITORY_ID }}
+        run: |
+          test "$REPOSITORY_NAME" = "starPaw/capture402-solana"
+          [[ "$EXPECTED_ID" =~ ^[1-9][0-9]*$ ]]
+          test "$REPOSITORY_ID" = "$EXPECTED_ID"
+          test "$REPOSITORY_PRIVATE" = "false"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tested-sbf
+          path: target/deploy
+      - name: Install locked dependencies and Linux test tools
+        env:
+          CXXFLAGS: -std=c++20
+        run: |
+          npm ci --prefix integration
+          sudo apt-get update
+          sudo apt-get install --yes nginx strace
+      - name: Validate integration and wallet build
+        env:
+          SAC006_TEST_NGINX: /usr/sbin/nginx
+          SAC006_TEST_STRACE: /usr/bin/strace
+        run: |
+          npm run typecheck --prefix integration
+          npm test --prefix integration
+          # Real custody transfer requires root only on the disposable hosted runner.
+          (cd integration && sudo env PATH="$PATH" node node_modules/vitest/vitest.mjs run test/isolation-custody.test.ts)
+          npm run build:wallet --prefix integration
+          python3 -B -m unittest discover -s ops -p 'test_reconcile_wire.py' -v
+          git diff --exit-code

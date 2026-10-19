@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#f6f7f3">
+<meta name="description" content="Capture402 payment lab. A fixed test-token budget, an original capture deadline and explicit payer reclaim on Solana Devnet.">
+<title>Capture402 payment lab · Live Devnet</title>
+<link rel="stylesheet" href="/assets/style.css"><script type="module" src="/assets/app.js"></script>
+</head>
+<body>
+<a class="skip-link" href="#next-step">Skip to next step</a>
+<header class="shell"><a class="brand" href="/customer">Capture402 <small>Payment lab</small></a><span class="network">Live Devnet — test tokens</span><a id="illustration-link" href="/#demo" target="_blank" rel="noopener noreferrer">Open wallet-free illustration ↗</a></header>
+<main class="shell">
+<div class="heading"><div><p class="eyebrow">A fixed budget. An original deadline.</p><h1>Try a fixed budget.</h1><p>Reserve 100 test tokens. Collect in parts. Return unused.</p></div><span id="payment-state" class="state-pill">Checking readiness…</span></div>
+<p class="notice">Test tokens only, no monetary value. Requires a Devnet wallet, this test mint and Devnet SOL for reclaim fees.</p>
+<noscript><p class="notice">JavaScript is required to inspect original orders and use the wallet. No payment actions are available here without it. Keep original receipts and use the independent reclaim guide below if the application server is unavailable.</p></noscript>
+<p id="setup-notice" class="notice" role="status" hidden>Devnet provisioning required. Real transactions need configured identities, test mint and funding.</p>
+<div class="lab-grid">
+<section class="card terms-card" aria-labelledby="terms-heading">
+<p class="eyebrow">01 / Original agreement</p><h2 id="terms-heading">100 test-token maximum</h2>
+<p id="original-order">No original offer issued.</p>
+<div class="scenarios" aria-label="Payment path"><button data-scenario="normal" aria-pressed="true">Complete · collect 40 + 25, release 35</button><button data-scenario="partial-reclaim" aria-pressed="false">Stop early · collect 40, reclaim 60</button></div>
+<p id="path-description" class="hint">Choose a path before preparing an offer. A funded or uncertain order keeps its original path.</p>
+<div class="deadline"><div><span>Capture window remaining</span><strong id="clock">—</strong></div><p id="clock-label">Checking original terms…</p></div>
+<p id="original-terms">The capture deadline is fixed when the offer is issued. It cannot be extended. New terms require a separate authorization.</p>
+<p class="hint">The live clock cannot be advanced. A disabled late-capture button is not evidence of on-chain enforcement. Eligibility is checked against Solana Clock at execution.</p>
+<div class="money-bar" aria-hidden="true"><span id="bar-paid"></span><span id="bar-held"></span><span id="bar-returned"></span></div>
+<div class="metrics" aria-label="Payment totals"><div><span>Paid to merchant</span><strong id="captured">—</strong></div><div><span>Held in escrow</span><strong id="remaining">—</strong></div><div><span>Returned unused</span><strong id="released">—</strong></div></div>
+<p id="totals-caption" class="hint">No finalized payment account observed.</p><p id="released-copy" class="hint" hidden></p>
+</section>
+<section id="customer-panel" class="card next-card" aria-labelledby="next-step" tabindex="-1">
+<p class="eyebrow">02 / Next safe step</p><h2 id="next-step">Check readiness</h2><p id="readiness" role="status" aria-live="polite">Checking Devnet readiness…</p>
+<p id="next-actor" class="eyebrow">Observe only</p><button id="next-action" class="button primary wide" disabled>Checking readiness…</button><p id="next-reason" class="reason">Every signature and submission requires an explicit action.</p>
+<div class="wallet-box"><div><span id="wallet-label">Your Solana wallet</span><code id="payer-key">No wallet connected</code></div><button id="connect-wallet" class="button secondary">Connect wallet</button></div>
+<div id="session-recovery" hidden><button id="restore-order-session" class="button secondary" disabled>Restore original order with my wallet</button><p class="hint">Browser access expires after 24 hours. Restore this same order with a wallet message; its original payment and receipts stay unchanged.</p></div>
+<div id="faucet-panel"><button id="claim-test-tokens" aria-describedby="faucet-availability" class="button secondary" disabled>Claim 1,000 test tokens</button><button id="refresh-test-tokens" class="button secondary" hidden>Check original token request</button><p id="faucet-availability" class="reason" role="status">Checking test-token availability…</p><p class="hint">Free Devnet test tokens for this lab. A separate wallet message requests 1,000 tokens; one claim per wallet every 24 hours, limited supply. Devnet SOL for payer reclaim fees is separate.</p><p id="faucet-status" class="reason" role="status"></p><a id="faucet-receipt" target="_blank" rel="noopener noreferrer" hidden>Original token receipt ↗</a></div>
+<p id="payer-balance" class="balance">Test-mint funding is checked before an offer is prepared.</p>
+<p id="payer-sol-balance" class="balance">Payer Devnet SOL is needed for reclaim network fees. Test tokens cannot pay SOL fees.</p>
+<p class="hint">Wallet approval alone is not a finalized payment. There is no automatic capture, retry or return at expiry.</p>
+</section>
+</div>
+<div id="action-status" class="action-status" role="status" aria-live="polite" hidden></div>
+<section class="card history-card" aria-labelledby="history-heading"><div class="history-heading"><div><p class="eyebrow">03 / Original evidence</p><h2 id="history-heading">Receipt summary</h2></div><button id="refresh" class="button secondary">Observe original state</button></div><p id="receipt-summary">No original receipts yet.</p><details id="receipt-details"><summary>Original events and signatures</summary><div id="timeline"><p>No transactions yet. Only original transaction signatures link to Devnet Explorer.</p></div></details></section>
+<section class="recovery-note" aria-label="Recovery boundary"><p>This lab demonstrates payments; it does not perform compute work or deliver a paid report. The merchant chooses charges; the program does not verify service delivery.</p><p>Browser reclaim uses application routes to prepare and submit your payer-signed transaction. It needs the application server, network access, fees and usable token accounts. Expiry alone moves no funds; already-paid tokens are unaffected.</p><p>Full application-server outage? Use the <a id="reclaim-guide" href="https://github.com/starPaw/capture402-solana/blob/main/integration/README.md#wallet-signed-direct-reclaim" target="_blank" rel="noopener noreferrer">public standalone reclaim guide ↗</a>. Keep the original order, signed bytes and signatures. UNKNOWN is not permission to resend.</p></section>
+<details id="advanced" class="card advanced"><summary>Advanced · other scenarios, payer controls, protocol and operator tools</summary>
+<div class="advanced-grid">
+<section aria-labelledby="payer-heading"><h2 id="payer-heading" tabindex="-1">Explicit payer controls</h2>
+<div class="scenarios" aria-label="Advanced scenarios"><button data-scenario="refund">Refund</button><button data-scenario="cancelled">Cancelled</button><button data-scenario="unavailable">Unavailable merchant</button><button data-scenario="atomic">Atomic capture + release</button></div>
+<button id="prepare-offer" class="button secondary" disabled>Prepare unsigned offer</button>
+<button id="authorize" class="button secondary wide" disabled>Authorize 100 test tokens</button><p id="authorize-reason" class="reason">Connect the payer wallet first.</p>
+<div id="reclaim-box" hidden><button id="reclaim" class="button secondary wide" disabled>Reclaim remaining hold</button><button id="renew-reclaim" class="button secondary wide" hidden>Prepare fresh reclaim after finalized expiry</button><p id="reclaim-description" class="reason">Payer reclaim opens at the immutable capture deadline.</p></div>
+<button id="abandon-authorize" class="button secondary wide" hidden>Archive selected expired unfunded draft</button><button id="new-budget" class="button secondary" hidden>Prepare a new offer explicitly</button>
+</section>
+<section id="merchant-panel" aria-labelledby="merchant-heading"><h2 id="merchant-heading">Merchant operator only</h2><button id="enable-demo-controls" class="button secondary" hidden disabled>Enable merchant demo controls with my wallet</button><div id="operator-credentials" class="unlock-row"><label for="merchant-secret">Devnet operator secret<input id="merchant-secret" type="password" autocomplete="off" spellcheck="false" autocapitalize="none" maxlength="512" aria-describedby="operator-status"></label><button id="unlock-merchant" class="button secondary" disabled>Unlock</button><button id="lock-merchant" class="button secondary" hidden>Lock</button></div><p id="operator-status" class="reason" role="status">Operator-only: separate merchant secret. Payer signing cannot unlock access.</p><p id="merchant-balance" class="balance">Merchant test-mint balance awaits an original order.</p>
+<div class="step"><button data-action="beer" class="button secondary" disabled>Collect 40</button><span data-reason="beer" class="reason">Merchant operator access required.</span></div><div class="step"><button data-action="salmon" class="button secondary" disabled>Collect 25</button><span data-reason="salmon" class="reason">Finalize capture 40 first.</span></div><div class="step"><button data-action="finish" id="finish" class="button secondary" disabled>Release unused 35</button><span data-reason="finish" class="reason">Finalize captures 40 and 25 first.</span></div><div class="step"><button data-action="atomic" class="button secondary" disabled>Capture 40 + release 60 atomically</button><span data-reason="atomic" class="reason"></span></div><div class="step"><button data-action="void" class="button secondary" disabled>Explicit merchant release</button><span data-reason="void" class="reason"></span></div><div class="step"><button data-action="refund" class="button secondary" disabled>Merchant-funded refund</button><span data-reason="refund" class="reason"></span></div>
+<p id="merchant-control-hint" class="hint">Explicit actions only. The secret stays in this tab's memory and is cleared on lock or navigation. Pending or unknown results stay locked.</p><p class="hint">Refunds return already-captured tokens and require merchant consent, liquidity and an open refund window. They are separate from unused-hold release or reclaim.</p>
+</section>
+</div>
+<div class="protocol"><h2>Protocol inspector · original terms</h2><div class="inspector-totals"><p>Authorized <strong id="authorized">—</strong></p><p>Refundable F <strong id="refundable">—</strong></p><p>Refunded by merchant <strong id="refunded">—</strong></p></div><p id="state-pair">No finalized payment account yet.</p><dl><dt>Payer</dt><dd id="detail-payer">Not connected</dd><dt>Payment PDA</dt><dd id="payment-id">No original offer</dd><dt>Test mint</dt><dd id="mint-id">Awaiting configuration</dd><dt>Program</dt><dd id="program-id">Loading accepted deployment</dd><dt>Deadlines</dt><dd id="deadline-terms">Immutable original terms; eligibility uses Solana Clock.</dd><dt>Authority</dt><dd id="authority-description">Wallet connection grants no merchant access.</dd><dt>Recovery</dt><dd>Pending and UNKNOWN preserve custody, locks and durable journals. No automatic retry or deadline reset. Renewal requires explicit eligibility and fresh finalized no-effect proof.</dd></dl></div>
+</details>
+<footer>Experimental payment lab · Source implementation, installed release and funded-wallet acceptance are separate.</footer>
+</main>
+<dialog id="wallet-dialog" aria-labelledby="wallet-dialog-title"><button class="dialog-close" id="close-wallet" aria-label="Close wallet dialog">×</button><h2 id="wallet-dialog-title">Connect a Devnet wallet</h2><p>Connection alone does not authorize or submit a payment.</p><div id="wallet-list"></div><p id="wallet-help" hidden>No compatible wallet detected. Open this page in a browser with a Devnet wallet.</p></dialog>
+</body></html>

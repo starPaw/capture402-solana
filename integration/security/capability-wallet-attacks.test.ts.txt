@@ -1,0 +1,108 @@
+// Local HTTP → real facilitator → accepted SBF. No Devnet submissions or mocked payment engine.
+import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { getBase64Encoder, getTransactionDecoder, partiallySignTransaction, type Address } from "@solana/kit";
+import { getMintToInstruction } from "@solana-program/token";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { demoSponsorComputeBounds } from "../src/demo-compute.js";
+import { createRestaurantApp, DEMO_BUDGET, DEMO_UNIT, RestaurantOrders, type RestaurantConfig } from "../src/restaurant.js";
+import { createPresentationApp } from "../src/restaurant-server.js";
+import { OperationStore } from "../src/operation-store.js";
+import { FileSubmissionJournal } from "../src/submission-journal.js";
+import { encodeTransaction } from "../src/transactions.js";
+import { decodeHeader, encodeHeader, type PaymentRequired } from "../src/http-transport.js";
+import { createHarness, type Harness, NOW, inspect } from "./fixture.js";
+import type { Hono } from "hono";
+let h: Harness, c: RestaurantConfig, app: Hono, dir: string;
+const merchantToken = "local-merchant-test-credential-0123456789";
+const origin = "https://restaurant.test";
+type Session = { id: string; cookie: string; required: PaymentRequired; unsigned: string };
+beforeEach(async () => {
+  h = await createHarness(demoSponsorComputeBounds());
+  h.ok(await h.direct([getMintToInstruction({ mint: h.mint, token: await h.payerAta(), mintAuthority: h.setup, amount: 1_000_000_000n })]));
+  dir = mkdtempSync(join(tmpdir(), "capture402-restaurant-"));
+  const ledger = Object.assign(h.ledger, {
+    getSignatureStatus: async (signature: string) => {
+      const s = h.ledger.submissions.find(s => s.signature === signature);
+      return s && s.status !== "unknown" ? { kind: "found" as const, commitment: "finalized" as const, slot: 1n, err: s.status === "failed" ? "failed" : null } : { kind: "not-found" as const };
+    },
+    getAccountAtLeast: async (address: Address) => ({ kind: "ok" as const, slot: 1n, account: await h.ledger.getAccount(address) }),
+  });
+  c = { merchantToken, facilitatorUrl: h.url, bearerToken: "local-only-test", network: h.ledger.network, programId: h.facilitator.programId, feePayer: h.facilitatorKey.address, server: h.server, asset: h.mint, amount: DEMO_BUDGET, captureDeadlineSeconds: 150, refundDeadlineSeconds: 30, store: new OperationStore(join(dir, "legacy")), orders: new RestaurantOrders(join(dir, "orders")), reclaimJournal: new FileSubmissionJournal(join(dir, "reclaim")), ledger, origin, now: () => h.ledger.now(), getLatestBlockhash: async () => h.lifetime(), handler: async () => { throw new Error("unused legacy one-shot handler"); } };
+  app = createRestaurantApp(c);
+});
+afterEach(async () => { await h.close(); });
+async function offer(scenario = "normal"): Promise<Session> {
+  const r = await app.request(`${origin}/resource?payer=${h.payer.address}&scenario=${scenario}`);
+  expect(r.status).toBe(402);
+  const required = decodeHeader(r.headers.get("PAYMENT-REQUIRED")!) as PaymentRequired;
+  expect(required.accepts[0]!.amount).toBe("100000000");
+  const b = await r.json() as any;
+  return { id: b.order, unsigned: b.unsigned, required, cookie: r.headers.get("set-cookie")!.split(";")[0]! };
+}
+async function sign(unsigned: string, signer = h.payer) {
+  return encodeTransaction(await partiallySignTransaction([signer.keyPair], getTransactionDecoder().decode(getBase64Encoder().encode(unsigned))));
+}
+async function authorize(s: Session) {
+  return app.request(`${origin}/resource?order=${s.id}`, { method: "POST", headers: { cookie: s.cookie, origin, "PAYMENT-SIGNATURE": encodeHeader({ x402Version: 2, resource: s.required.resource, accepted: s.required.accepts[0], payload: { transaction: await sign(s.unsigned) } }) } });
+}
+const view = async (s: Session) => (await (await app.request(`${origin}/api/orders/${s.id}`, { headers: { cookie: s.cookie } })).json()) as any;
+const action = (s: Session, a: string) => app.request(`${origin}/api/orders/${s.id}/actions/${a}`, { method: "POST", headers: { authorization: `Bearer ${merchantToken}`, origin } });
+async function expectAction(s: Session, a: string) {
+  const r = await action(s, a); const body = await r.json() as any;
+  expect(body, JSON.stringify(body)).toMatchObject({ receipt: { success: true } }); expect(r.status).toBe(200);
+  expect(decodeHeader(r.headers.get("PAYMENT-RESPONSE")!)).toMatchObject({ success: true, transaction: body.receipt.transaction });
+}
+
+test("regression: cross-site navigation overwrites capability for a funded order", async () => {
+  const existing = await offer("unavailable");
+  expect((await authorize(existing)).status).toBe(200);
+  expect(await view(existing)).toMatchObject({ remaining: 100, status: "active" });
+  // A browser omits SameSite=Strict on a cross-site top-level GET but accepts Set-Cookie.
+  // The attacker can use any funded public payer, without knowing the victim capability.
+  const navigation = await app.request(`${origin}/resource?payer=${h.payer.address}`, {
+    headers: { "sec-fetch-site": "cross-site", "sec-fetch-mode": "navigate", "sec-fetch-dest": "document", referer: "https://attacker.invalid/" },
+  });
+  expect(navigation.status).toBe(402);
+  const cookieHeader = navigation.headers.get("set-cookie")!;
+  expect(cookieHeader).toContain("SameSite=Strict");
+  expect(cookieHeader).toContain("Secure");
+  const replaced = cookieHeader.split(";")[0]!;
+  expect(replaced).not.toBe(existing.cookie);
+  expect((await app.request(`${origin}/api/orders/${existing.id}`, { headers: { cookie: replaced } })).status).toBe(409);
+  h.setTime(NOW + 150n);
+  expect((await app.request(`${origin}/api/orders/${existing.id}/reclaim`, { headers: { cookie: replaced } })).status).toBe(409);
+  expect(h.state(c.orders.read(existing.id).payment).held).toBe(DEMO_BUDGET);
+  expect(h.ledger.submissions).toHaveLength(1);
+  // The overwritten capability, if separately retained, still works; wallet alone cannot recover it.
+  expect((await app.request(`${origin}/api/orders/${existing.id}/reclaim`, { headers: { cookie: existing.cookie } })).status).toBe(200);
+});
+
+test("regression: committed wallet bundle accepts foreign connect and accountChanged messages", async () => {
+  const events = new EventTarget();
+  const frame = { style: {}, contentWindow: { postMessage() {} } };
+  const element = { className: "", innerHTML: "", querySelector: () => frame, remove() {} };
+  vi.stubGlobal("window", Object.assign(events, { location: { origin }, setInterval, clearInterval }));
+  vi.stubGlobal("document", { title: "Wallet security fixture", getElementsByClassName: () => [], createElement: () => element, body: { appendChild() {} } });
+  vi.stubGlobal("localStorage", { getItem: () => null, setItem() {}, removeItem() {} });
+  const path = "../web/solflare.js";
+  const { connectSolflareDevnet } = await import(path);
+  const changed = vi.fn();
+  const connectionPromise = connectSolflareDevnet(changed);
+  const inject = (event: unknown) => events.dispatchEvent(new MessageEvent("message", {
+    origin: "https://attacker.invalid", source: null,
+    data: { channel: "solflareIframeToWalletAdapter", data: { type: "event", event } },
+  }));
+  try {
+    inject({ type: "connect", data: { publicKey: h.outsider.address } });
+    const connection = await connectionPromise;
+    expect(connection.account.address).toBe(h.outsider.address);
+    inject({ type: "accountChanged", data: { publicKey: h.payer.address } });
+    expect(changed).toHaveBeenCalledWith(expect.objectContaining({ address: h.payer.address }));
+    inject({ type: "disconnect" });
+    expect(changed).toHaveBeenLastCalledWith(null);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

@@ -1,0 +1,18 @@
+[
+  {
+    "path": "src/lib.rs",
+    "sha256": "d1dca11960b44d9d8e3b4258e2ddb6f4b9c4aee84435465959ded49cdc7e6971"
+  },
+  {
+    "path": "integration/src/paid-report-client.ts",
+    "sha256": "0d40432da809a251d4939441e0cdc21fc9581d539c9ee8f5e29936b5b54e9b68"
+  },
+  {
+    "path": "integration/src/paid-report.ts",
+    "sha256": "1accc81bcff184f54151664104f64e6a07d88d05f602cc1580ba8f689158de9f"
+  },
+  {
+    "path": "integration/src/reclaim.ts",
+    "sha256": "f7b2b9568a8ae5c03556877f2a6039fc9de6c424577c288b241430c511027364"
+  }
+]

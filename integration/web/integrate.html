@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Integration guide — Capture402</title><meta name="description" content="Roles, fixed-price reference flow, costs and standalone payer recovery."><meta name="robots" content="noindex,nofollow">
+<link rel="stylesheet" href="/assets/guide.css"></head>
+<body><a class="skip" href="#content">Skip to content</a>
+<header class="wrap"><a class="brand" href="/"><span aria-hidden="true">[■]</span> Capture402</a><nav aria-label="Main navigation">
+<a href="/#how-it-works">Example</a><a href="/integrate" aria-current="page">Integration guide</a><a href="/evidence">Evidence</a><a href="/customer">Try on Devnet ↗</a></nav></header>
+<main class="wrap" id="content" tabindex="-1"><div class="intro"><p class="eyebrow">Reference integration · Solana</p>
+<h1>Build around a fixed budget and deadline.</h1>
+<p class="lead">Your application owns the work. Capture402 enforces who can move the payment, how much, and when.</p>
+
+<p>One payer authorization funds a hold. The merchant can collect in parts before the stored capture deadline. At or after it, the payer can reclaim the unused hold without the merchant or facilitator.</p>
+
+<a class="button" href="#sequence">Follow the reference sequence</a></div>
+<nav class="contents" aria-label="On this page"><a href="#roles">Responsibilities</a><a href="#terms">Terms and assets</a><a href="#compare">Compare approaches</a><a href="#sequence">Paid-report reference</a><a href="#reclaim">Server unavailable</a><a href="#limits">Costs and limits</a><a href="#setup">Setup</a></nav>
+<section id="roles"><h2>Four roles, separate responsibilities.</h2><dl class="roles">
+<dt>Payer</dt><dd>Independently checks the network, program, merchant, mint, maximum, deadlines, sponsor and complete transaction message before signing authorization. Retains the original payment identity and consent; signs direct reclaim when eligible.</dd>
+
+<dt>Merchant</dt><dd>Decides what to charge and signs each capture, unused-balance release or refund. The merchant can collect up to the remaining hold before the capture deadline. The protocol does not verify usage or service delivery.</dd>
+
+<dt>Facilitator</dt><dd>Validates economic signatures, terms and account roles, adds the configured sponsor signature and relays each exact transaction once. It sponsors relayed fees and authorization rent in this profile. It cannot replace payer or merchant consent. Its private gateway needs authentication and admission controls.</dd>
+
+<dt>Application</dt><dd>Quotes the work, binds it to the original payment, obtains explicit consent, preserves signed attempts and durable journals, and verifies finalized effects before delivery. It owns idempotency, interruption handling and artifact access. A successful HTTP status or wallet approval alone is insufficient proof.</dd>
+</dl></section>
+
+<section id="terms"><h2>Agree once. Keep those terms.</h2>
+<p>The maximum, merchant, mint and capture/refund deadlines are immutable. The authorization cannot be topped up, extended or reopened. New terms require a new payer authorization, never an automatic response to a timeout. Each merchant operation signs the expected held and captured-unrefunded balances; stale consent fails onchain.</p>
+
+<p><strong>Classic SPL Token assets only.</strong> Token-2022 and wrapped SOL are rejected. Amounts are integer base units; show the configured mint and decimals before consent. The report example uses a six-decimal test mint, not real USDC.</p>
+
+<p><strong>Local x402 extension.</strong> The reference uses x402 v2 HTTP headers with <code>scheme="auth-capture"</code> and <code>extra.paymentFlow="escrow"</code>. Its SVM wire profile is a proposed local extension. It is not an upstream-approved SVM binding, a published drop-in SDK or a promise of arbitrary x402 interoperability.</p>
+
+<p>The facilitator exposes <code>GET /supported</code>, <code>POST /verify</code> (read-only preflight) and <code>POST /settle</code>. Capture, release (<code>void</code>) and refund are signed settle payloads, not new endpoints. The resource flow settles authorization directly; it does not insert a separate HTTP <code>/verify</code> call. Direct reclaim is never relayed through <code>/settle</code>.</p>
+</section>
+
+<section id="compare"><h2>Choose by authority, timing and exit.</h2>
+<p>For a known charge paid now, consider an immediate payment. For repeated or streamed spending, compare a payment channel. Capture402 fits a fixed Solana amount and capture deadline with merchant-signed collections and payer-signed recovery of the unused hold. Base Commerce Payments offers similar authorization, partial capture, expiry and payer reclaim on Base. None of these payment mechanisms verifies that a service was delivered.</p>
+<details><summary>Technical comparison, source revisions and costs</summary>
+<p class="note">Examined 16 October 2026. These are the named implementations and source revisions below, not a claim about every channel, x402 binding or deployment.</p>
+<dl>
+<dt>Immediate x402 <code>exact</code> on SVM</dt><dd>The payer signs a transaction for the specified recipient and amount; a merchant or separate sponsor may pay its network fee. The scheme settles that payment rather than reserving a ceiling for later captures, so it specifies no unused-hold reclaim or closure path. It is simpler when no reservation is needed. <a href="https://github.com/x402-foundation/x402/blob/faa1c694c66a3732aaabbce93bdae140e521a67d/specs/schemes/exact/scheme_exact_svm.md">Examined x402 SVM exact specification ↗</a></dd>
+
+<dt>Solana Foundation Payment Channels / MPP sessions</dt><dd>A payer escrows a ceiling; cumulative vouchers signed by the configured signer authorize spending, and settlement/distribution can pay in parts. A payer can sign a top-up or start forced close. Forced close starts a relative grace period; the payee may settle and seal during grace, and anyone may seal after it. Payer withdrawal of unused funds requires a sealed channel. Voucher expiry is per voucher, not an immutable absolute capture cutoff stored at channel open. Opening, settlement, distribution and closure use transactions; channel and vault rent can be recovered through its closure path. This is a real alternative for repeated spending and unused recovery. <a href="https://github.com/solana-foundation/payment-channels/blob/3ffa4d6728ad88e4a9667a76ad9ccd68a302c696/README.md">Examined channel overview ↗</a> · <a href="https://github.com/solana-foundation/payment-channels/blob/3ffa4d6728ad88e4a9667a76ad9ccd68a302c696/docs/001-payment-channel-state-machine.md">state machine ↗</a></dd>
+
+<dt>Capture402</dt><dd>One payer authorization fixes the maximum and capture deadline; the stored merchant signs each capture strictly before that deadline. The payer can sign direct reclaim of the remaining hold at or after it, without waiting for a merchant close or channel grace period. The merchant may release unused funds early; a later merchant-funded refund is separate. Each operation needs a transaction, although capture and release can be atomic. The payment identity account remains allocated in v1, so its rent is not recovered by a close instruction. <a href="https://github.com/starPaw/capture402-solana/blob/main/src/lib.rs">Program source ↗</a></dd>
+
+<dt>Base Commerce Payments</dt><dd>Its immutable payment terms include a maximum, authorization expiry and refund expiry. A designated operator can partially capture before authorization expiry or void unused escrow; the payer can reclaim the remaining authorization after expiry. It therefore shares the central authorize/capture/reclaim idea. The examined design uses Base contracts, modular token collectors, configurable fee bounds and EVM transaction gas rather than this Solana program's account model. <a href="https://github.com/base/commerce-payments/blob/b748fdd7a830a655a19a530edcf2a94b9dc7d25f/docs/README.md">Examined Base protocol overview ↗</a> · <a href="https://github.com/base/commerce-payments/blob/b748fdd7a830a655a19a530edcf2a94b9dc7d25f/docs/operations/Capture.md">capture ↗</a> · <a href="https://github.com/base/commerce-payments/blob/b748fdd7a830a655a19a530edcf2a94b9dc7d25f/docs/operations/Reclaim.md">reclaim ↗</a></dd>
+</dl>
+<p class="note">This comparison describes the linked source revisions. Current deployed bytecode, production recovery, equivalent-workload fees, latency and throughput have not been established here. Transaction counts and costs depend on the path and sponsor; no cost advantage is claimed.</p>
+</details></section>
+
+<section id="sequence"><p class="eyebrow">Existing example · synthetic-demo-v1</p>
+<h2>One authorization. Explicit captures. One saved result.</h2>
+<p>This fixed-price reference filters a synthetic dataset and computes a synthetic aggregate. It does not meter arbitrary compute or demonstrate customer demand. The payment lab is a separate application and delivers no report.</p>
+
+<p><strong>100 test tokens authorized → capture 40 → capture 25 → release unused 35.</strong> At six decimals these are 100,000,000; 40,000,000; 25,000,000; and 35,000,000 base units. The charges are fixed, regardless of the selected region.</p>
+
+<ol class="sequence"><li><h3>Prepare and retain the original quote</h3><p><code>GET /resource</code> returns 402 with <code>PAYMENT-REQUIRED</code> and no work. <code>GET /api/report-session</code> creates a private session capability. <code>POST /api/orders</code>, with the same session, configured Origin, idempotency key, payer and region request, retains one unsigned quote and manifest. Preserve private preparation before requesting a signature.</p>
+</li>
+
+<li><h3>Independently verify, then authorize once</h3><p><code>prepareReport</code> recomputes the manifest. <code>submitReport</code> checks independent client policy, rebuilds the complete unsigned message and compares it before accessing the payer signer. Only an identical message is signed. One <code>POST /resource?order=&lt;id&gt;</code> carries the canonical request and original <code>PAYMENT-SIGNATURE</code>. The application permanently reserves the run before relay.</p>
+</li>
+
+<li><h3>Prove each payment before proceeding</h3><p>After proven authorization, create the dataset privately, then merchant-sign capture 40. After that proof, create the aggregate privately and merchant-sign capture 25. Then merchant-sign release of the unused 35 (<code>type=void</code>). Private artifact bytes and hashes precede capture consent. Requests cannot choose amounts, stages or expected balances.</p>
+</li>
+
+<li><h3>Persist both artifacts before delivery</h3><p>Every original signature must be finalized without error, with exact transaction/account correspondence, expected SPL token deltas and a payment snapshot fenced after its slot. Only after all four proofs and durable persistence of the complete immutable response can HTTP 200 return <strong>both</strong> artifacts. There is no per-stage delivery. <code>PAYMENT-RESPONSE</code> is the final release receipt; the body contains all four proof rows.</p>
+</li>
+
+<li><h3>Retrieve purchased bytes after a lost response</h3><p><code>retrieveReport</code> uses authenticated <code>GET /api/orders/&lt;id&gt;/result</code> for the same order. <code>readPaidReport</code> checks the response and artifact hashes. Retrieval never signs, settles or resumes work. Incomplete retrieval returns 409 without artifacts; another paid POST is a conflict, not a retry strategy.</p>
+</li>
+</ol>
+<details><summary>Reference pseudocode and actual source</summary><p><strong>Pseudocode — not runnable.</strong> Labels below describe orchestration; they are not exported API methods or an installable package.</p>
+
+<pre><code>retain original session, order, quote and request privately
+independently validate policy + manifest + complete unsigned message
+obtain explicit payer consent; submit original authorization once
+prove original authorization
+create private dataset; merchant signs capture 40; prove capture
+create private aggregate; merchant signs capture 25; prove capture
+merchant signs release 35; prove release
+persist complete immutable response durably
+return dataset + aggregate together
+on lost response: read original saved result only</code></pre>
+<ul><li><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/src/paid-report-client.ts">Actual helpers: prepareReport, submitReport, retrieveReport, readPaidReport ↗</a></li>
+<li><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/src/paid-report.ts">Resource routes, fixed prices and durable orchestration ↗</a></li>
+<li><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/src/paid-report-proof.ts">Finalized effect verification ↗</a></li>
+<li><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/src/transactions.ts">Existing instruction builders ↗</a></li>
+<li><a href="https://github.com/starPaw/capture402-solana/blob/main/src/lib.rs">Onchain authority and deadline guards ↗</a></li>
+</ul><p class="note">Capture402 source links refer to the public main branch. Pin a reviewed commit when integrating.</p>
+</details>
+</section>
+
+<section id="returns"><h2>Unused return and refund are different.</h2><dl>
+<dt>Merchant release</dt><dd>A merchant-signed <code>void</code> returns the whole remaining hold to the payer. Capture can also explicitly release the remainder atomically. This returns unused escrow; it does not reverse a charge.</dd>
+
+<dt>Payer reclaim</dt><dd>At or after the stored capture deadline, the payer signs a transaction returning the positive remaining hold. Already-captured funds are unaffected. The payer has no general unilateral early cancellation in this profile. Expiry moves no funds automatically.</dd>
+
+<dt>Merchant-funded refund</dt><dd>Before the separate refund deadline, the merchant can sign a refund from its own token account, bounded by captured, unrefunded value. It needs merchant consent and liquidity. It neither spends the vault nor restores the spending budget. Refund is outside the first paid-report implementation.</dd>
+</dl></section>
+
+<section id="reclaim"><h2>If the application server is unavailable.</h2>
+<p>The browser lab prepares and submits reclaim through application routes. Turning off merchant actions does not demonstrate reclaim with the application server stopped.</p>
+
+<p>The existing standalone payer tools build and send reclaim directly to the program, with no resource server or facilitator participation. Use the independently pinned deployment/network, original payment account, payer wallet, a usable canonical token account, configured trusted RPC and preserved reclaim journal. The payer needs SOL for its transaction fee. Check finalized payment and Clock state: the capture deadline must have arrived and a positive hold must remain.</p>
+
+<p>The wallet-signed tool first creates an exact unsigned offer and review digest; after explicit review, the payer signs those bytes and submits once. Keep offer files, signed wires, journals, keys and provider configuration private. After an uncertain response, observe the original signature and retain the reservation. Missing history does not prove non-execution; never replace the blockhash, switch providers or pay again to bypass uncertainty.</p>
+
+<p><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/README.md#wallet-signed-direct-reclaim">Standalone wallet-signed reclaim instructions ↗</a> · <a href="https://github.com/starPaw/capture402-solana/blob/main/integration/src/reclaim.ts">Existing payer-direct CLI ↗</a></p>
+</section>
+
+<section id="limits"><h2>Plan for costs and interruptions.</h2><p>Each authorization, capture, release, refund and reclaim requires an onchain transaction, except capture-and-release can be atomic in one transaction. Network base and configured priority fees still apply, including fees for failed transactions. This profile charges zero protocol fees; that does not make the lifecycle free.</p>
+
+<p>The payment identity account remains allocated permanently in v1, even after balances reach zero. There is no close/reset instruction to recover its rent. Authorization also needs the canonical vault account; account creation and rent funding must be accounted for explicitly. No token-price, savings, throughput or latency estimate is promised here.</p>
+
+<p>The report MVP uses a designated resource writer, designated facilitator and trusted private durable local filesystem. It is not distributed exactly-once delivery. An interrupted, pending or UNKNOWN run can block <strong>all new paid-report economics indefinitely</strong>, including prepared orders after restart. There is no lock timeout or automatic recovery. Completed purchases remain readable.</p>
+
+<p>Preserve original records, wires, signatures, locks and reservations. Do not clear state, repeat paid POSTs or issue compensating release/refund to make a demo complete. Isolate the report store, journals and coordination domain from the payment lab. Operator diagnosis and any later repair need their own reviewed scope.</p>
+</section>
+
+<section id="setup"><h2>Start with the existing reference.</h2><p>Setup requires locked dependencies, a source-built program artifact, an independently accepted deployment record and root-owned operational configuration, configured network identity, a six-decimal classic SPL test mint, private credentials, sponsorship and isolated durable storage. The report mode is disabled by default. Setup instructions do not grant permission for live signing, funding or deployment.</p>
+
+<ul><li><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/README.md">Paid-report setup and interruption limits ↗</a></li>
+<li><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/README.md">Reference integration and reclaim runbook ↗</a></li>
+<li><a href="https://github.com/starPaw/capture402-solana/blob/main/integration/deploy/README.md">Existing serving stack ↗</a></li>
+</ul>
+<p>No published Capture402 npm SDK is provided. The named helpers are source files in the reference application.</p>
+<a class="button" href="/evidence">Inspect verification scope</a></section>
+</main>
+<footer class="wrap"><p>Experimental implementation. Customer demand and production readiness are not established.</p>
+<nav aria-label="Footer navigation"><a href="/integrate">Integration guide</a><a href="/evidence">Verification scope</a><a href="/customer">Previous order history</a></nav><p class="note">Devnet uses test tokens with no monetary value. No mainnet or independent security-audit claim.</p>
+</footer></body></html>
