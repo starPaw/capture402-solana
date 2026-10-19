@@ -19,17 +19,17 @@ import type { BudgetBackend } from './campaign-sponsorship.ts';
 import type { Ledger } from './ledger.ts';
 import type { Lifetime } from './transactions.ts';
 import { SponsorshipGuard } from './sponsorship.ts';
-import { DevnetFaucetStore, FAUCET_AMOUNT, FaucetQuotaRefusal, type FaucetEntry } from './devnet-faucet-store.ts';
+import { DevnetFaucetStore, faucetAmountLabel, FaucetQuotaRefusal, type FaucetEntry } from './devnet-faucet-store.ts';
 
 export type FaucetConfig = { store: DevnetFaucetStore; sponsor: KeyPairSigner;
   ledger: Ledger; backend: BudgetBackend; budget: CampaignBudget; admission: SponsorshipGuard;
-  latest: ()=>Promise<Lifetime>; challengeKey: string; bearerToken: string };
+  latest: ()=>Promise<Lifetime>; challengeKey: string; bearerToken: string; verifyGenesis?:()=>Promise<void> };
 type RequestIntent = { schema:1; id:string; recipient:Address; issuedAt:number; expiresAt:number; policyHash:string };
 const sha = (value:string)=>createHash('sha256').update(value).digest('hex');
 const canonical = (v:unknown)=>JSON.stringify(v);
 const clock = (v:bigint) => {const n=Number(v);if(!Number.isSafeInteger(n)||n<=0)throw Error('invalid finalized faucet Clock');return n;};
-const messageFor = (i:RequestIntent,origin:string,mint:Address) =>
-  `Capture402 Devnet test-token request\nOrigin: ${origin}\nRecipient: ${i.recipient}\nMint: ${mint}\nAmount: 1000 test tokens\nNetwork: Solana Devnet\nRequest: ${i.id}\nExpires: ${i.expiresAt}\nNo funds or transaction authority are granted by this message.`;
+const messageFor = (i:RequestIntent,origin:string,mint:Address,amountLabel:string) =>
+  `Capture402 Devnet test-token request\nOrigin: ${origin}\nRecipient: ${i.recipient}\nMint: ${mint}\nAmount: ${amountLabel}\nNetwork: Solana Devnet\nRequest: ${i.id}\nExpires: ${i.expiresAt}\nNo funds or transaction authority are granted by this message.`;
 export class FaucetRefusal extends Error {}
 
 export class DevnetFaucet {
@@ -37,20 +37,45 @@ export class DevnetFaucet {
   private readonly config:FaucetConfig;
   private readonly policyHash:string;
   private challengeWindow={at:0,count:0};
+  private statusWindow={at:0,count:0};
   constructor(config:FaucetConfig) {
-    this.store=config.store;this.config=config;this.policyHash=sha(canonical(this.store.policy));
+    this.store=config.store;this.config=config;
+    if(this.store.policy.schema===2 && !config.verifyGenesis)throw Error('Circle faucet requires fresh Devnet genesis verification');this.policyHash=sha(canonical(this.store.policy));
     if(config.challengeKey.length<32 || config.challengeKey.trim()!==config.challengeKey ||
       config.sponsor.address!==this.store.policy.sponsor || config.ledger.network!==this.store.policy.network ||
       config.budget.policy.sponsor!==config.sponsor.address || config.budget.policy.genesisHash!==this.store.policy.genesisHash ||
       config.admission.attemptCount>600)throw Error('faucet runtime/policy mismatch');
   }
+  identity() {const p=this.store.policy;return p.schema===2?{profileHash:p.profileHash,mint:p.mint,network:p.network,treasury:p.sponsor,pool:p.pool,amountAtomic:p.amount}:{};}
   blocked():boolean {return this.store.pending().length!==0;}
+  async treasury() {
+    const p=this.store.policy;
+    if(await ata(p.sponsor,p.mint)!==p.pool)throw Error('faucet pool ATA mismatch');
+    const [mint,pool]=await Promise.all([this.config.ledger.getAccount(p.mint),this.config.ledger.getAccount(p.pool)]);
+    if(!mint || mint.owner!==TOKEN_PROGRAM_ADDRESS || mint.data.length!==getMintDecoder().fixedSize ||
+      !getMintDecoder().decode(mint.data).isInitialized || getMintDecoder().decode(mint.data).decimals!==6 ||
+      !pool || pool.owner!==TOKEN_PROGRAM_ADDRESS || pool.data.length!==getTokenSize())return {available:false,balanceAtomic:null,reason:'Treasury token supply unavailable; operator refill required.'};
+    const balance=getTokenDecoder().decode(pool.data);
+    if(balance.mint!==p.mint || balance.owner!==p.sponsor || balance.state!==AccountState.Initialized)return {available:false,balanceAtomic:null,reason:'Treasury token account invalid.'};
+    return {available:balance.amount>=BigInt(p.amount),balanceAtomic:String(balance.amount),reason:balance.amount<BigInt(p.amount)?'Treasury token supply low; operator refill required.':''};
+  }
+  async availability(recipient?:Address) {
+    const summary=this.store.summary();
+    const nextEligibleAt=recipient && isAddress(recipient)?this.store.nextEligibleAt(recipient):0;
+    if(this.blocked())return {available:false,reason:'Original faucet operation pending or UNKNOWN.',nextEligibleAt};
+    if(summary.used>=summary.maximum)return {available:false,reason:'Approved claim or token spending limit reached.',nextEligibleAt};
+    if(nextEligibleAt>Math.floor(Date.now()/1000))return {available:false,reason:'Claim cooldown active: one claim per 24 hours.',nextEligibleAt};
+    const wallNow=Date.now();if(wallNow-this.statusWindow.at>=60000)this.statusWindow={at:wallNow,count:0};
+    if(++this.statusWindow.count>60)return {available:false,reason:'Treasury status rate limit active; check again later.',nextEligibleAt};
+    try {await this.config.verifyGenesis?.();return {...await this.treasury(),nextEligibleAt};}
+    catch {return {available:false,reason:'Devnet RPC unavailable; claims paused.',nextEligibleAt};}
+  }
   async challenge(recipient:Address) {
     if(!isAddress(recipient)||recipient===this.store.policy.sponsor)throw new FaucetRefusal('Connect the recipient wallet.');
     if(this.blocked())throw new FaucetRefusal('Original faucet operation pending or unknown. New economics stopped.');
-    if(this.store.summary().used>=100)throw new FaucetRefusal('The total test-token claim limit has been reached.');
+    if(this.store.summary().used>=this.store.summary().maximum)throw new FaucetRefusal('The total test-token claim limit has been reached.');
     const wallNow=Date.now();
-    if(Math.floor(wallNow/1000)<this.store.nextEligibleAt(recipient))throw new FaucetRefusal('This wallet may request 1000 test tokens once per 24 hours.');
+    if(Math.floor(wallNow/1000)<this.store.nextEligibleAt(recipient))throw new FaucetRefusal(`This wallet may request ${faucetAmountLabel(this.store.policy)} once per 24 hours.`);
     if(wallNow-this.challengeWindow.at>=60_000)this.challengeWindow={at:wallNow,count:0};
     if(++this.challengeWindow.count>60)throw new FaucetRefusal('Too many test-token requests. Try again later.');
     // No RPC, account allocation, signing or durable admission for unsigned challenges.
@@ -58,8 +83,8 @@ export class DevnetFaucet {
     const i:RequestIntent={schema:1,id:randomBytes(32).toString('hex'),recipient,issuedAt,expiresAt:issuedAt+600,policyHash:this.policyHash};
     const payload=Buffer.from(canonical(i)).toString('base64url');
     const mac=createHmac('sha256',this.config.challengeKey).update('capture402-devnet-faucet-v1\0').update(payload).digest('base64url');
-    return {id:i.id,recipient,amount:1000,mint:this.store.policy.mint,expiresAt:i.expiresAt,
-      message:messageFor(i,this.store.policy.origin,this.store.policy.mint),token:`${payload}.${mac}`};
+    return {id:i.id,recipient,amount:Number(this.store.policy.amount)/1_000_000,mint:this.store.policy.mint,expiresAt:i.expiresAt,
+      message:messageFor(i,this.store.policy.origin,this.store.policy.mint,faucetAmountLabel(this.store.policy)),token:`${payload}.${mac}`};
   }
   private intent(token:string):RequestIntent {
     if(typeof token!=='string'||token.length>2048||!/^[-_A-Za-z0-9]+\.[-_A-Za-z0-9]+$/.test(token))throw new FaucetRefusal('Invalid test-token request.');
@@ -74,7 +99,7 @@ export class DevnetFaucet {
     return i;
   }
   private view(e:FaucetEntry) {
-    return {id:e.id,recipient:e.recipient,amount:1000,mint:this.store.policy.mint,
+    return {id:e.id,recipient:e.recipient,amount:Number(this.store.policy.amount)/1_000_000,mint:this.store.policy.mint,
       status:e.stage==='finalized'?(e.outcome!.succeeded?'finalized':'failed'):e.stage==='refused'?'refused':e.stage==='reserved'?'pending':'unknown',
       signature:e.signature??null,finalizedSlot:e.outcome?.slot??null,nextEligibleAt:e.requestedAt+86400};
   }
@@ -97,25 +122,22 @@ export class DevnetFaucet {
     if(typeof signature!=='string'||!/^[A-Za-z0-9+/]{86}==$/.test(signature))throw new FaucetRefusal('Wallet message signature required.');
     const bytes=Buffer.from(signature,'base64');
     if(bytes.length!==64||bytes.toString('base64')!==signature || !await verifySignature(await getPublicKeyFromAddress(i.recipient),bytes as unknown as SignatureBytes,
-      new TextEncoder().encode(messageFor(i,this.store.policy.origin,this.store.policy.mint))))throw new FaucetRefusal('Wallet message signature differs from the original request.');
+      new TextEncoder().encode(messageFor(i,this.store.policy.origin,this.store.policy.mint,faucetAmountLabel(this.store.policy)))))throw new FaucetRefusal('Wallet message signature differs from the original request.');
     // Replays only inspect the original; they never quote, sign, reserve or submit again.
     if(this.store.get(i.id))return this.observe(i.id);
+    await this.config.verifyGenesis?.();
     const now=clock(await this.config.ledger.now());
     if(now<i.issuedAt-30||now>=i.expiresAt)throw new FaucetRefusal('Test-token request expired. No transfer was started.');
-    this.store.reserve(i.id,i.recipient,now,{message:messageFor(i,this.store.policy.origin,this.store.policy.mint),signature,
+    this.store.reserve(i.id,i.recipient,now,{message:messageFor(i,this.store.policy.origin,this.store.policy.mint,faucetAmountLabel(this.store.policy)),signature,
       tokenSha256:sha(token),issuedAt:i.issuedAt,expiresAt:i.expiresAt});
     try {
       const p=this.store.policy;
       if(await ata(p.sponsor,p.mint)!==p.pool)throw Error('faucet pool ATA mismatch');
-      const mint=await this.config.ledger.getAccount(p.mint),pool=await this.config.ledger.getAccount(p.pool);
-      if(!mint || mint.owner!==TOKEN_PROGRAM_ADDRESS || mint.data.length!==getMintDecoder().fixedSize ||
-        !getMintDecoder().decode(mint.data).isInitialized || getMintDecoder().decode(mint.data).decimals!==6 ||
-        !pool || pool.owner!==TOKEN_PROGRAM_ADDRESS || pool.data.length!==getTokenSize())throw new FaucetRefusal('Test-token supply is unavailable.');
-      const balance=getTokenDecoder().decode(pool.data);
-      if(balance.mint!==p.mint || balance.owner!==p.sponsor || balance.state!==AccountState.Initialized || balance.amount<FAUCET_AMOUNT)throw new FaucetRefusal('Test-token supply is unavailable.');
+      const treasury=await this.treasury();
+      if(!treasury.available)throw new FaucetRefusal('Treasury token supply is low or unavailable. Operator refill required.');
       const target=await ata(i.recipient,p.mint),lifetime=await this.config.latest();
       const instructions=[getCreateAssociatedTokenIdempotentInstruction({payer:this.config.sponsor,ata:target,owner:i.recipient,mint:p.mint,tokenProgram:TOKEN_PROGRAM_ADDRESS}),
-        getTransferCheckedInstruction({source:p.pool,mint:p.mint,destination:target,authority:this.config.sponsor,amount:FAUCET_AMOUNT,decimals:6})];
+        getTransferCheckedInstruction({source:p.pool,mint:p.mint,destination:target,authority:this.config.sponsor,amount:BigInt(p.amount),decimals:6})];
       const tx=await buildDemoTransaction({feePayer:p.sponsor,signers:[],instructions,lifetime},this.config.ledger);
       const hash=messageDigest(tx.messageBytes),budgetId=`faucet-${i.id}`;
       this.store.prepare(i.id,{messageHash:hash,unsigned:encodeTransaction(tx),budgetId,blockhash:lifetime.blockhash,lastValidBlockHeight:String(lifetime.lastValidBlockHeight)});
@@ -144,7 +166,8 @@ export function createDevnetFaucetApp(faucet:DevnetFaucet,bearerToken:string):Ho
   app.use('*',bodyLimit({maxSize:4096,onError:c=>c.json({error:'request too large'},413)}));
   app.use('*',async(c,next)=>{c.header('Cache-Control','no-store');await next();});
   app.onError((e,c)=>c.json({error:e instanceof FaucetRefusal||e instanceof FaucetQuotaRefusal?e.message:'Original test-token operation unavailable. Inspect its receipt; do not repeat.'},409));
-  app.get('/health',c=>c.json({blocked:faucet.blocked()}));
+  app.get('/health',c=>c.json({blocked:faucet.blocked(),...faucet.identity()}));
+  app.get('/status',async c=>c.json(await faucet.availability(c.req.query('recipient') as Address|undefined)));
   app.post('/challenge',async c=>{const b=await c.req.json();if(!b||Object.keys(b).join()!=='recipient')return c.json({error:'recipient only'},400);return c.json(await faucet.challenge(b.recipient));});
   app.post('/claim',async c=>{const b=await c.req.json();if(!b||Object.keys(b).sort().join()!=='signature,token')return c.json({error:'original request and wallet signature only'},400);return c.json(await faucet.claim(b.token,b.signature));});
   app.get('/claims/:id',async c=>c.json(await faucet.observe(c.req.param('id'))));

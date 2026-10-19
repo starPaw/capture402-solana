@@ -1,5 +1,6 @@
 // Test-token distribution only. Durable wallet/global quotas and one original wire;
 // no escrow state, authority, admission reset, automatic initialization or resend.
+import { CIRCLE_MINT, CIRCLE_PROFILE, circleApproval, profileHash, type PaymentProfile } from './payment-profile.ts';
 import { createHash } from 'node:crypto';
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -10,9 +11,12 @@ import { createDurableFile, ensureDurableDirectory, replaceDurableFile } from '.
 export const FAUCET_AMOUNT = 1_000_000_000n;
 export const FAUCET_COOLDOWN_SECONDS = 86_400;
 export const FAUCET_MAXIMUM_CLAIMS = 100;
-export type FaucetPolicy = { schema: 1; reference: string; network: string; genesisHash: string;
+type FaucetIdentity = { reference: string; network: string; genesisHash: string;
   mint: Address; sponsor: Address; pool: Address; origin: string; maximumClaims: 100;
-  amount: '1000000000'; cooldownSeconds: 86400 };
+  cooldownSeconds: 86400 };
+export type FaucetPolicy = FaucetIdentity & ({schema:1;amount:'1000000000'} | {schema:2;amount:'500000';profileHash:string;tokenSpendLimit:string});
+export const faucetClaimLimit = (p:FaucetPolicy) => p.schema===1 ? FAUCET_MAXIMUM_CLAIMS : Math.min(FAUCET_MAXIMUM_CLAIMS,Number(BigInt(p.tokenSpendLimit)/BigInt(p.amount)));
+export const faucetAmountLabel = (p:FaucetPolicy) => p.schema===1 ? '1000 test tokens' : '0.50 Devnet USDC';
 export type FaucetEntry = { id: string; recipient: Address; requestedAt: number;
   consent: { message: string; signature: string; tokenSha256: string; issuedAt: number; expiresAt: number };
   stage: 'reserved' | 'signing' | 'signed' | 'refused' | 'finalized';
@@ -25,11 +29,11 @@ const hash = (value: string) => createHash('sha256').update(value).digest('hex')
 const active = (e: FaucetEntry) => ['reserved','signing','signed'].includes(e.stage);
 export class FaucetQuotaRefusal extends Error {}
 export function validateFaucetPolicy(p: FaucetPolicy) {
-  if (!p || Object.keys(p).sort().join() !== 'amount,cooldownSeconds,genesisHash,maximumClaims,mint,network,origin,pool,reference,schema,sponsor' ||
-    p.schema !== 1 || !p.reference?.trim() || p.network !== 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1' ||
+  if (!p || Object.keys(p).sort().join() !== (p.schema===2 ? 'amount,cooldownSeconds,genesisHash,maximumClaims,mint,network,origin,pool,profileHash,reference,schema,sponsor,tokenSpendLimit' : 'amount,cooldownSeconds,genesisHash,maximumClaims,mint,network,origin,pool,reference,schema,sponsor') ||
+    (p.schema !== 1 && p.schema !== 2) || !p.reference?.trim() || p.network !== 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1' ||
     p.genesisHash !== 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG' ||
     ![p.mint,p.sponsor,p.pool].every(isAddress) || p.maximumClaims !== FAUCET_MAXIMUM_CLAIMS ||
-    p.amount !== String(FAUCET_AMOUNT) || p.cooldownSeconds !== FAUCET_COOLDOWN_SECONDS ||
+    (p.schema===1 ? p.amount !== String(FAUCET_AMOUNT) : p.amount!=='500000' || p.mint!==CIRCLE_MINT || !/^[a-f0-9]{64}$/.test(p.profileHash) || !/^[1-9][0-9]{0,7}$/.test(p.tokenSpendLimit) || BigInt(p.tokenSpendLimit)<500000n || BigInt(p.tokenSpendLimit)>50000000n) || p.cooldownSeconds !== FAUCET_COOLDOWN_SECONDS ||
     new URL(p.origin).origin !== p.origin || !p.origin.startsWith('https://')) throw Error('invalid fixed Devnet faucet policy');
 }
 
@@ -78,7 +82,7 @@ export class DevnetFaucetStore {
     if(readFileSync(join(this.directory,'policy.json'),'utf8')!==encode(this.policy))throw Error('faucet policy drift');
     const s=JSON.parse(readFileSync(join(this.directory,'state.json'),'utf8')) as State;
     if(!s || Object.keys(s).sort().join()!=='entries,policyHash,schema' || s.schema!==1 || s.policyHash!==hash(encode(this.policy)) ||
-      !s.entries || typeof s.entries!=='object' || Array.isArray(s.entries) || Object.keys(s.entries).length>FAUCET_MAXIMUM_CLAIMS)throw Error('invalid faucet state');
+      !s.entries || typeof s.entries!=='object' || Array.isArray(s.entries) || Object.keys(s.entries).length>faucetClaimLimit(this.policy))throw Error('invalid faucet state');
     const signatures=new Set<string>();let inFlight=0;
     for(const [id,e] of Object.entries(s.entries)) {
       if(!/^[a-f0-9]{64}$/.test(id) || !e || e.id!==id || !isAddress(e.recipient) || e.recipient===this.policy.sponsor ||
@@ -104,7 +108,7 @@ export class DevnetFaucetStore {
     return this.withLock(()=>this.state().entries[id]);
   }
   pending():FaucetEntry[] {return this.withLock(()=>Object.values(this.state().entries).filter(active));}
-  summary() {return this.withLock(()=>({used:Object.keys(this.state().entries).length,maximum:FAUCET_MAXIMUM_CLAIMS}));}
+  summary() {return this.withLock(()=>({used:Object.keys(this.state().entries).length,maximum:faucetClaimLimit(this.policy)}));}
   nextEligibleAt(recipient:Address):number {
     return this.withLock(()=>Math.max(0,...Object.values(this.state().entries).filter(e=>e.recipient===recipient).map(e=>e.requestedAt+FAUCET_COOLDOWN_SECONDS)));
   }
@@ -114,8 +118,8 @@ export class DevnetFaucetStore {
       if(!/^[a-f0-9]{64}$/.test(id) || !isAddress(recipient) || recipient===this.policy.sponsor || !Number.isSafeInteger(now) || now<=0)throw Error('invalid faucet recipient/intent');
       if(s.entries[id])throw Error('original faucet claim already retained; never repeat');
       if(Object.values(s.entries).some(active))throw new FaucetQuotaRefusal('Original faucet operation pending or unknown. New economics stopped.');
-      if(Object.keys(s.entries).length>=FAUCET_MAXIMUM_CLAIMS)throw new FaucetQuotaRefusal('The total test-token claim limit has been reached.');
-      if(Object.values(s.entries).some(e=>e.recipient===recipient && now<e.requestedAt+FAUCET_COOLDOWN_SECONDS))throw new FaucetQuotaRefusal('This wallet may request 1000 test tokens once per 24 hours.');
+      if(Object.keys(s.entries).length>=faucetClaimLimit(this.policy))throw new FaucetQuotaRefusal('The total test-token claim limit has been reached.');
+      if(Object.values(s.entries).some(e=>e.recipient===recipient && now<e.requestedAt+FAUCET_COOLDOWN_SECONDS))throw new FaucetQuotaRefusal(`This wallet may request ${faucetAmountLabel(this.policy)} once per 24 hours.`);
       if(!consent || typeof consent.message!=='string' || consent.message.length>2048 || !/^[A-Za-z0-9+/]{86}==$/.test(consent.signature) ||
         !/^[a-f0-9]{64}$/.test(consent.tokenSha256) || !Number.isSafeInteger(consent.issuedAt) || consent.expiresAt!==consent.issuedAt+600)throw Error('invalid faucet consent');
       const e:FaucetEntry={id,recipient,requestedAt:now,consent:{...consent},stage:'reserved'};s.entries[id]=e;this.write(s);return e;
@@ -135,4 +139,13 @@ export class DevnetFaucetStore {
       if(e.stage==='finalized') {if(encode(e.outcome)!==encode(outcome))throw Error('faucet finality drift');return;}
       if(e.stage!=='signed')throw Error('missing signed faucet original');e.outcome=outcome;e.stage='finalized';this.write(s);});
   }
+}
+
+// The root-owned approval and immutable per-namespace policy must agree exactly.
+export function validateProfileFaucet(profile:PaymentProfile,policy:FaucetPolicy) {
+  validateFaucetPolicy(policy);
+  if(profile.id!==CIRCLE_PROFILE.id) {if(policy.schema!==1)throw Error('legacy faucet requires original v1 policy');return;}
+  const p=circleApproval();
+  if(policy.schema!==2 || policy.profileHash!==profileHash(p) || policy.sponsor!==p.treasury || policy.mint!==p.mint ||
+    policy.network!==p.network || policy.genesisHash!==p.genesisHash || policy.origin!==p.origin || policy.tokenSpendLimit!==p.tokenSpendLimit)throw Error('Circle faucet approval mismatch');
 }

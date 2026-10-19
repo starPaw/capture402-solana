@@ -1,3 +1,4 @@
+import { LEGACY_PROFILE, CIRCLE_PROFILE, circleApproval, profileHash, validateProfileRuntime, type PaymentProfile } from './payment-profile.ts';
 import { assertStoreAccess, domainFromEnvironment, withShared, type RecoveryDomain } from "./coordination.ts";
 // Restaurant orchestration only. All economic movements use the unchanged SAC-006 builders,
 // receipt validation, facilitator and SBF. A durable order binds one signed budget to its menu
@@ -41,7 +42,7 @@ type Scenario = typeof SCENARIOS[number];
 type Action = "authorize" | "beer" | "salmon" | "finish" | "void" | "refund" | "reclaim" | "atomic";
 type Event = { lifetimeObservation?: LifetimeObservation; action: Action; label: string; amount: string; at: string; status: "prepared" | "pending" | "finalized" | "rejected"; transaction: string; transactionBase64: string; receipt?: SettleResponse };
 type Order = { authorizeLifetime?: LifetimeObservation; id: string; capabilityHash: string; payer: Address; payment: Address; scenario: Scenario; required: PaymentRequired; unsigned: string; createdAt: number; status: "draft" | "active" | "closed" | "pending" | "rejected"; events: Event[]; reclaimUnsigned?: string; reclaimLifetime?: { blockhash: string; lastValidBlockHeight: string; blockhashSlot?: string } };
-export type RestaurantConfig = ResourceServerConfig & { ledger: Ledger & Pick<ChainReader, "getSignatureStatus"> & Pick<RpcLedger,"getAccountAtLeast"> & {offerBlockhashValid?: (hash: string) => Promise<boolean>; getClockAtLeast?:RpcLedger['getClockAtLeast']; getFinalizedBlockhashStatus?:RpcLedger['getFinalizedBlockhashStatus']; quoteTransactionFee?:RpcLedger['quoteTransactionFee']}; orders: RestaurantOrders; reclaimJournal: SubmissionJournal; origin: string; merchantToken?: string; publicMerchantDemo?:boolean; orderAdmission?: AdmissionJournal; b3Recovery?:B3Recovery; authorizeAbandonPolicy?:AuthorizeAbandonPolicy; authorizeAbandonPolicies?:readonly AuthorizeAbandonPolicy[]; authorizeIsolationPolicy?:InstalledIsolationPolicy; faucet?:FaucetProxy };
+export type RestaurantConfig = ResourceServerConfig & { ledger: Ledger & Pick<ChainReader, "getSignatureStatus"> & Pick<RpcLedger,"getAccountAtLeast"> & {offerBlockhashValid?: (hash: string) => Promise<boolean>; getClockAtLeast?:RpcLedger['getClockAtLeast']; getFinalizedBlockhashStatus?:RpcLedger['getFinalizedBlockhashStatus']; quoteTransactionFee?:RpcLedger['quoteTransactionFee']}; orders: RestaurantOrders; reclaimJournal: SubmissionJournal; origin: string; merchantToken?: string; publicMerchantDemo?:boolean; orderAdmission?: AdmissionJournal; b3Recovery?:B3Recovery; authorizeAbandonPolicy?:AuthorizeAbandonPolicy; authorizeAbandonPolicies?:readonly AuthorizeAbandonPolicy[]; authorizeIsolationPolicy?:InstalledIsolationPolicy; faucet?:FaucetProxy; paymentProfile?:PaymentProfile;verifyEconomicIdentity?:()=>Promise<void> };
 
 export class RestaurantOrders {
   readonly dir: string;
@@ -78,11 +79,13 @@ const labels: Record<Action, string> = { authorize: "Budget authorization", beer
 const merchantActions = ["beer", "salmon", "finish", "void", "refund", "atomic"] as const;
 class RestaurantRefusal extends Error {}
 class RestaurantSessionUnavailable extends RestaurantRefusal {}
-const refundAmount = (order: Order, p: Payment) => order.scenario === "normal" ? 10n * DEMO_UNIT : p.refundable;
+const profileFor = (c:RestaurantConfig) => c.paymentProfile ?? LEGACY_PROFILE;
+const refundAmount = (c:RestaurantConfig, order: Order, p: Payment) => order.scenario === "normal" ? BigInt(profileFor(c).refundExample) : p.refundable;
 
 // One policy for read-only eligibility and signing preflight. Onchain Clock and (H,F)
 // remain authoritative at execution, including races after this finalized snapshot.
 function actionReasons(c: RestaurantConfig, order: Order, p: Payment | null, now: bigint, blocked: boolean) {
+  const label=(v:string)=>`${money(BigInt(v))} ${profileFor(c).assetLabel}`;
   const completed = (a: Action) => order.events.some(e => e.action === a && e.status === "finalized");
   function reason(a: Exclude<Action, "authorize">): string {
     if (blocked) return "Original operation pending or reserved; inspect its signatures.";
@@ -99,28 +102,28 @@ function actionReasons(c: RestaurantConfig, order: Order, p: Payment | null, now
     if (a === "refund") {
       if (now >= p.refundDeadline) return "Onchain refund deadline expired.";
       if (order.scenario === "normal") {
-        if (!completed("finish") || p.held !== 0n) return "Finalize captures 40 and 25 and void 35 before refund 10.";
-        return p.refundable < refundAmount(order, p) ? "Refundable balance is below 10 test tokens." : "";
+        if (!completed("finish") || p.held !== 0n) return `Finalize captures ${label(profileFor(c).firstCapture)} and ${label(profileFor(c).secondCapture)} and release ${label(profileFor(c).releaseRemainder)} before refund ${label(profileFor(c).refundExample)}.`;
+        return p.refundable < refundAmount(c, order, p) ? `Refundable balance is below ${label(profileFor(c).refundExample)}.` : "";
       }
       if (order.scenario !== "refund") return "Refund requires the normal or refund scenario.";
       return p.refundable <= 0n ? "No refundable captured balance." : "";
     }
     if (now >= p.captureDeadline) return "Onchain capture deadline expired; payer reclaim may be eligible.";
     if (p.held <= 0n) return "No remaining hold.";
-    if (a === 'atomic') return order.scenario !== 'atomic' || p.held !== DEMO_BUDGET || p.refundable !== 0n ? 'Atomic scenario requires the original 100/0 hold.' : '';
-    if (order.scenario === 'atomic') return 'Use the single atomic capture 40 + release 60 action.';
-    if (order.scenario === 'partial-reclaim' && a !== 'beer') return 'Partial capture scenario permits capture 40, then payer reclaim after the real deadline.';
+    if (a === 'atomic') return order.scenario !== 'atomic' || p.held !== c.amount || p.refundable !== 0n ? `Atomic scenario requires the original ${label(profileFor(c).budget)} hold and zero refundable balance.` : '';
+    if (order.scenario === 'atomic') return `Use the single atomic capture ${label(profileFor(c).firstCapture)} and release remainder action.`;
+    if (order.scenario === 'partial-reclaim' && a !== 'beer') return `Partial capture scenario permits capture ${label(profileFor(c).firstCapture)}, then payer reclaim after the real deadline.`;
     if (a === "beer") {
       if (order.scenario === "cancelled") return "Cancelled scenario permits explicit void only.";
-      return p.held < 40n * DEMO_UNIT ? "Remaining hold is below 40 test tokens." : "";
+      return p.held < BigInt(profileFor(c).firstCapture) ? `Remaining hold is below ${label(profileFor(c).firstCapture)}.` : "";
     }
     if (a === "salmon") {
-      if (order.scenario !== "normal") return "Capture 25 belongs to the normal scenario.";
-      if (!completed("beer")) return "Finalize capture 40 first.";
-      return p.held < 25n * DEMO_UNIT ? "Remaining hold is below 25 test tokens." : "";
+      if (order.scenario !== "normal") return `Capture ${label(profileFor(c).secondCapture)} belongs to the normal scenario.`;
+      if (!completed("beer")) return profileFor(c).id===LEGACY_PROFILE.id?"Finalize capture 40 first.":`Finalize capture ${label(profileFor(c).firstCapture)} first.`;
+      return p.held < BigInt(profileFor(c).secondCapture) ? `Remaining hold is below ${label(profileFor(c).secondCapture)}.` : "";
     }
     if (a === "finish") {
-      if (order.scenario === "normal") return !completed("salmon") || p.held !== 35n * DEMO_UNIT ? "Finalize captures 40 and 25 before voiding the remaining 35." : "";
+      if (order.scenario === "normal") return !completed("salmon") || p.held !== BigInt(profileFor(c).releaseRemainder) ? `Finalize captures ${label(profileFor(c).firstCapture)} and ${label(profileFor(c).secondCapture)} before releasing ${label(profileFor(c).releaseRemainder)}.` : "";
       return order.scenario !== "refund" || !completed("refund") ? "Complete the refund scenario before releasing the remaining hold." : "";
     }
     return ""; // Explicit void of a positive eligible hold.
@@ -200,7 +203,7 @@ export async function restaurantSnapshot(c: RestaurantConfig, order: Order, obse
   if (snapshot.kind !== "ok") throw new Error("finalized payment state unavailable; inspect original signatures");
   if (!snapshot.account) return null;
   const p = decodePayment(snapshot.account.data);
-  if (!p || snapshot.account.owner !== c.programId || p.payer !== order.payer || p.server !== c.server.address || p.mint !== c.asset || p.maximum !== DEMO_BUDGET || String(p.captureDeadline) !== String(order.required.accepts[0]!.extra!.captureDeadline) || String(p.refundDeadline) !== String(order.required.accepts[0]!.extra!.refundDeadline)) throw new Error("payment identity differs from this order");
+  if (!p || snapshot.account.owner !== c.programId || p.payer !== order.payer || p.server !== c.server.address || p.mint !== c.asset || p.maximum !== c.amount || String(p.captureDeadline) !== String(order.required.accepts[0]!.extra!.captureDeadline) || String(p.refundDeadline) !== String(order.required.accepts[0]!.extra!.refundDeadline)) throw new Error("payment identity differs from this order");
   return p;
 }
 async function orderClock(c: RestaurantConfig,order:Order,observations?:SignatureObservations): Promise<bigint> {
@@ -217,7 +220,10 @@ async function orderClock(c: RestaurantConfig,order:Order,observations?:Signatur
 }
 
 export function createRestaurantApp(c: RestaurantConfig): Hono {
-  if (c.amount !== DEMO_BUDGET) throw new Error("restaurant budget must be exactly 100 six-decimal demo USDC");
+  const profile=profileFor(c);
+  validateProfileRuntime(profile,c);
+  if(profile.id===CIRCLE_PROFILE.id && !c.verifyEconomicIdentity)throw Error('Circle restaurant requires fresh Devnet identity verification');
+  if(c.amount!==BigInt(profile.budget))throw Error("restaurant budget differs from trusted payment profile");
   // Separate application authority: an order capability never authorizes merchant signing.
   const merchantToken = c.merchantToken;
   if (merchantToken !== undefined && (merchantToken.length < 32 || merchantToken.trim() !== merchantToken || /[\r\n]/.test(merchantToken) || merchantToken === c.bearerToken)) {
@@ -239,6 +245,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
   }
   function owned(id: string, cookie: string | undefined): Order {
     const order = c.orders.read(id);
+    if(order.required.accepts[0]?.amount!==profile.budget || order.required.accepts[0]?.asset!==c.asset)throw Error('original order belongs to another payment profile');
     if (cookie && sessionAccess?.accepts(cookie,sessionScope(order))) return order;
     if (!cookie || cookie.length > 256) throw new RestaurantSessionUnavailable(sessionAccess ? "Original order session expired or unavailable. Restore access with a message signed by the original payer wallet. Keep the original order ID and signatures." : "Original order session expired or unavailable. Reopen the original browser session and keep its order ID and signatures.");
     const actual = Buffer.from(digest(cookie)); const expected = Buffer.from(order.capabilityHash);
@@ -247,7 +254,8 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
   }
   function demoScope(order:Order):MerchantDemoScope {
     const terms=order.required.accepts[0]!;
-    return {schema:1,origin:c.origin,network:c.network,programId:c.programId,sponsor:c.feePayer,merchant:c.server.address,mint:c.asset,budget:'100000000',
+    return {schema:1,origin:c.origin,network:c.network,programId:c.programId,sponsor:c.feePayer,merchant:c.server.address,mint:c.asset,budget:profile.budget as MerchantDemoScope['budget'],
+      ...(profile.id===CIRCLE_PROFILE.id?{profileHash:profileHash(circleApproval())}:{}),
       order:order.id,payment:order.payment,payer:order.payer,scenario:order.scenario,captureDeadline:Number(terms.extra!.captureDeadline),refundDeadline:Number(terms.extra!.refundDeadline),capabilityHash:order.capabilityHash};
   }
   function assertPublicCampaignReady(except?:string) {
@@ -271,6 +279,14 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
     const path=ctx.req.path;
     if(ctx.req.method==='POST' && (path==='/resource'||path.startsWith('/api/orders') && !/\/actions\//.test(path) && !sessionRequest(path)) ||
       ctx.req.method==='GET' && /^\/api\/orders\/[^/]+\/(signing-preflight|reclaim)$/.test(path) || ctx.req.method==='GET' && /\/actions\//.test(path))assertPublicCampaignReady();
+    await next();
+  });
+  if(c.verifyEconomicIdentity)app.use('*',async(ctx,next)=>{
+    const path=ctx.req.path;
+    if(ctx.req.method==='POST' && (path==='/resource' || path.startsWith('/api/orders') && !sessionRequest(path)) ||
+      ctx.req.method==='GET' && /^\/api\/orders\/[^/]+\/(reclaim|signing-preflight)$/.test(path)) {
+      try {await c.verifyEconomicIdentity!();}catch{return ctx.json({error:'Devnet RPC identity unavailable; new economics paused.'},503);}
+    }
     await next();
   });
   if(c.faucet) {
@@ -305,6 +321,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
         return new Response(response.body,{status:response.status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'}});
       } catch {return new Response(JSON.stringify({error:'Test-token response unavailable. Inspect the original request; do not repeat it.'}),{status:503,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});}
     };
+    app.get('/api/faucet/status',ctx=>{const recipient=ctx.req.query('recipient');if(recipient && !isAddress(recipient))return ctx.json({error:'invalid recipient'},400);return forward(recipient?`/status?recipient=${recipient}`:'/status','GET');});
     app.post('/api/faucet/challenge',async ctx=>forward('/challenge','POST',await ctx.req.json()));
     app.post('/api/faucet/claim',async ctx=>forward('/claim','POST',await ctx.req.json()));
     app.get('/api/faucet/claims/:id',ctx=>forward(`/claims/${ctx.req.param('id')}`,'GET'));
@@ -338,7 +355,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
     const balances = { payer: await tokenBalance(c, order.payer), merchant: await tokenBalance(c, c.server.address), payerSol: await payerSolBalance(c,order.payer) };
     const funding = !reasons.reclaim && p ? await reclaimFunding(c,order,p,balances.payerSol) : undefined;
     if(funding?.reason)reasons.reclaim=funding.reason;
-    if (!reasons.refund && (balances.merchant.amount === null || balances.merchant.amount < money(refundAmount(order, p!)))) reasons.refund = balances.merchant.reason || "Merchant test-token balance cannot fund this refund.";
+    if (!reasons.refund && (balances.merchant.amount === null || balances.merchant.amount < money(refundAmount(c, order, p!)))) reasons.refund = balances.merchant.reason || "Merchant test-token balance cannot fund this refund.";
     const path=c.orders.path(order.id);
     const abandoned=abandonmentEvidence(abandonPolicy(order),order,path);
     const isolated=authorizeIsolationEvidence(c.authorizeIsolationPolicy,order,path);
@@ -420,9 +437,9 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
     const id = randomBytes(16).toString("hex"); const capability = `${id}.${randomBytes(32).toString("hex")}`;
     const salt = randomBytes(32); const requirements = await freshRequirements(c);
     const balance = await tokenBalance(c, payer);
-    if (balance.amount === null || balance.amount < 100) return ctx.json({ error: balance.reason || "Payer needs 100 test-mint tokens; operator funding required. No authorization submitted." }, 402);
-    const required: PaymentRequired = { x402Version: 2, resource: { url: `${c.origin}/resource`, description: "Capture402 · 100 test-token Devnet budget", mimeType: "application/json" }, accepts: [requirements] };
-    const tx = await buildDemoTransaction({ feePayer: c.feePayer, signers: [], lifetime: await c.getLatestBlockhash(), instructions: [await authorizeInstruction({ programId: c.programId, payer, server: c.server.address, mint: c.asset, funder: c.feePayer, salt, maximum: DEMO_BUDGET, captureDeadline: BigInt(requirements.extra!.captureDeadline as number), refundDeadline: BigInt(requirements.extra!.refundDeadline as number) })] }, c.ledger);
+    if (balance.amount === null || balance.amount < money(c.amount)) return ctx.json({ error: balance.reason || `Payer needs ${money(c.amount)} ${profile.assetLabel}; operator funding required. No authorization submitted.` }, 402);
+    const required: PaymentRequired = { x402Version: 2, resource: { url: `${c.origin}/resource`, description: `Capture402 · ${money(c.amount)} ${profile.assetLabel} Devnet budget`, mimeType: "application/json" }, accepts: [requirements] };
+    const tx = await buildDemoTransaction({ feePayer: c.feePayer, signers: [], lifetime: await c.getLatestBlockhash(), instructions: [await authorizeInstruction({ programId: c.programId, payer, server: c.server.address, mint: c.asset, funder: c.feePayer, salt, maximum: c.amount, captureDeadline: BigInt(requirements.extra!.captureDeadline as number), refundDeadline: BigInt(requirements.extra!.refundDeadline as number) })] }, c.ledger);
     const order: Order = { id, capabilityHash: digest(capability), payer, payment: await paymentAddress(c.programId, payer, salt), scenario: scenario as Scenario, required, unsigned: encodeTransaction(tx), authorizeLifetime: transactionObservation(tx), createdAt: Number(await c.now()), status: "draft", events: [] };
     // One durable successor intent before admission/publication. Concurrent POSTs
     // cannot consume two extra A slots; crash/lost response never creates another.
@@ -511,7 +528,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
       if(!custody || existsSync(`${path}.authorize-abandon.lock`) || !c.ledger.getFinalizedBlockhashStatus || !c.ledger.getClockAtLeast ||
         c.store.list().some(e=>e.authorize?.payment===order.payment || e.terminal?.payment===order.payment) ||
         c.reclaimJournal.findByMessageHash(messageHash(decode(order.unsigned).messageBytes)).length) return ctx.json({error:'Selected original custody is not an unused draft; preserve it.'},409);
-      const proof=await proveExpiredUnfundedAuthorize({order,programId:c.programId,server:c.server.address,mint:c.asset,funder:c.feePayer,network:c.network,maximum:DEMO_BUDGET,
+      const proof=await proveExpiredUnfundedAuthorize({order,programId:c.programId,server:c.server.address,mint:c.asset,funder:c.feePayer,network:c.network,maximum:c.amount,
         captureDeadline:BigInt(order.required.accepts[0]!.extra!.captureDeadline as number),refundDeadline:BigInt(order.required.accepts[0]!.extra!.refundDeadline as number),
         reader:{getAccountAtLeast:(...args)=>c.ledger.getAccountAtLeast(...args),getFinalizedBlockhashStatus:(...args)=>c.ledger.getFinalizedBlockhashStatus!(...args),getClockAtLeast:(...args)=>c.ledger.getClockAtLeast!(...args)}});
       // The one fsynced immutable classification is the entire commit. The original
@@ -533,7 +550,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
     c.orders.reserve(order.id, "authorize");
     try {assertPublicCampaignReady(order.id);}catch(e){c.orders.unlock(order.id);throw e;}
     if(existsSync(`${c.orders.path(order.id)}.authorize-abandon.lock`)) {c.orders.unlock(order.id);return ctx.json({error:"Original authorization abandoned; no dispatch."},409);}
-    const event: Event = { action: "authorize", label: labels.authorize, amount: DEMO_BUDGET.toString(), at: new Date().toISOString(), status: "prepared", transaction: "", transactionBase64: payload.payload.transaction, lifetimeObservation: order.authorizeLifetime };
+    const event: Event = { action: "authorize", label: labels.authorize, amount: c.amount.toString(), at: new Date().toISOString(), status: "prepared", transaction: "", transactionBase64: payload.payload.transaction, lifetimeObservation: order.authorizeLifetime };
     c.orders.prepare(order, event);
     const result = await settle(c, { x402Version: 2, paymentPayload: { ...payload, extensions: undefined }, paymentRequirements: order.required.accepts[0]! }, tx, order.payer, order.authorizeLifetime);
     await recordResult(order, event, result.receipt, result.kind);
@@ -586,7 +603,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
       const reason = actionReasons(c, order, p, now, order.status === "pending")[action];
       if (reason) throw new RestaurantRefusal(reason);
       if (!p) throw new RestaurantRefusal("Original finalized payment unavailable.");
-      const amount = action === "beer" || action === 'atomic' ? 40n * DEMO_UNIT : action === "salmon" ? 25n * DEMO_UNIT : action === "refund" ? refundAmount(order, p) : p.held;
+      const amount = action === "beer" || action === 'atomic' ? BigInt(profileFor(c).firstCapture) : action === "salmon" ? BigInt(profileFor(c).secondCapture) : action === "refund" ? refundAmount(c, order, p) : p.held;
       if (action === "refund") {
         const balance = await tokenBalance(c, p.server);
         if (balance.amount === null || balance.amount < money(amount)) throw new RestaurantRefusal(balance.reason || "Merchant test-token balance cannot fund this refund.");
@@ -665,7 +682,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
       const oldUnsigned=order.reclaimUnsigned, oldLifetime=order.reclaimLifetime, oldConsent=generation ? null : readFileSync(consentPath,'utf8');
       if(c.reclaimJournal.findByMessageHash(messageHash(decode(oldUnsigned).messageBytes)).length) return ctx.json({error:'Retained journal attempt blocks preparation.'},409);
       const proof=await proveExpiredReclaimConsent({unsigned:oldUnsigned,consent:oldConsent,order:order.id,payment:order.payment,payer:order.payer,
-        server:c.server.address,mint:c.asset,programId:c.programId,maximum:DEMO_BUDGET,
+        server:c.server.address,mint:c.asset,programId:c.programId,maximum:c.amount,
         captureDeadline:BigInt(order.required.accepts[0]!.extra!.captureDeadline as number),refundDeadline:BigInt(order.required.accepts[0]!.extra!.refundDeadline as number),
         lifetime:oldLifetime,minContextSlot,reader:{getAccountAtLeast:(...args)=>c.ledger.getAccountAtLeast(...args),
           getFinalizedBlockhashStatus:(...args)=>c.ledger.getFinalizedBlockhashStatus!(...args),getClockAtLeast:(...args)=>c.ledger.getClockAtLeast!(...args)}});

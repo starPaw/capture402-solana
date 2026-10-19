@@ -199,6 +199,9 @@ button:disabled {
   font-size:13px;
   color:var(--muted);
 }
+#original-order {
+  overflow-wrap:anywhere;
+}
 #original-terms {
   font-size:14px;
   margin-top:12px;

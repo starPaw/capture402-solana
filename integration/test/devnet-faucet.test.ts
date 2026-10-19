@@ -1,5 +1,6 @@
+import { CIRCLE_MINT, DEVNET_PROGRAM, DEVNET_NETWORK } from '../src/payment-profile.ts';
 // Real local classic-SPL execution and cryptographic wallet consent. No Devnet sends.
-import { afterEach, beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi, describe } from 'vitest';
 import { mkdirSync, mkdtempSync, writeFileSync, renameSync, chmodSync, rmSync, openSync, closeSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -18,6 +19,7 @@ import type { FinalizedTransaction } from '../src/campaign-proof.ts';
 import { createGatewayApp } from '../src/gateway.ts';
 import { devnetFaucetProxy } from '../src/devnet-faucet-proxy.ts';
 
+describe.each(['legacy','circle'] as const)('%s faucet',mode=>{
 let h:Harness,dir:string,c:FaucetConfig,service:DevnetFaucet,policy:FaucetPolicy;
 let proofs:Map<string,FinalizedTransaction>,available:boolean;
 const network='solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1',genesis='EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
@@ -25,12 +27,13 @@ const bearer='local-faucet-only-bearer-credential-0123456789';
 const now=()=>Math.floor(Date.now()/1000);
 const balance=async(owner:Address)=>getTokenDecoder().decode((await h.ledger.getAccount(await ata(owner,h.mint)))!.data).amount;
 beforeEach(async()=>{
-  h=await createHarness();h.setTime(BigInt(now()));Reflect.set(h.ledger,'network',network);
+  h=await createHarness({},mode==='circle'?{mint:CIRCLE_MINT,programId:DEVNET_PROGRAM,network:DEVNET_NETWORK}:undefined);h.setTime(BigInt(now()));Reflect.set(h.ledger,'network',network);
   dir=mkdtempSync(join(tmpdir(),'capture402-faucet-'));proofs=new Map();available=true;
   const pool=await ata(h.facilitatorKey.address,h.mint);
   h.ok(await h.direct([getCreateAssociatedTokenIdempotentInstruction({payer:h.setup,ata:pool,owner:h.facilitatorKey.address,mint:h.mint,tokenProgram:TOKEN_PROGRAM_ADDRESS}),
     getMintToInstruction({mint:h.mint,token:pool,mintAuthority:h.setup,amount:100_000_000_000n})]));
   policy={schema:1,reference:'local-faucet-fixture',network,genesisHash:genesis,mint:h.mint,sponsor:h.facilitatorKey.address,pool,origin:'https://demo.test',maximumClaims:100,amount:'1000000000',cooldownSeconds:86400};
+  if(mode==='circle')policy={...policy,schema:2,amount:'500000',profileHash:'a'.repeat(64),tokenSpendLimit:'50000000'};
   for(const sub of ['faucet','budget','admission'])mkdirSync(join(dir,sub),{mode:0o700});
   DevnetFaucetStore.initialize(join(dir,'faucet'),policy);
   const campaign={schema:1 as const,reference:'local-faucet-budget',genesisHash:genesis,sponsor:h.facilitatorKey.address,browser:h.payer.address,spendLimit:'1000000000' as const};
@@ -50,7 +53,7 @@ beforeEach(async()=>{
     }
     return result;
   });
-  c={store:new DevnetFaucetStore(join(dir,'faucet'),policy),sponsor:h.facilitatorKey,ledger:h.ledger,
+  c={...(mode==='circle'?{verifyGenesis:vi.fn(async()=>{})}:{}),store:new DevnetFaucetStore(join(dir,'faucet'),policy),sponsor:h.facilitatorKey,ledger:h.ledger,
     backend:{fee:async()=>25_000n,rent:async()=>h.svm.minimumBalanceForRentExemption(165n),finalized:async signature=>available?proofs.get(signature)??null:null},
     budget:new CampaignBudget(join(dir,'budget'),campaign),
     admission:new SponsorshipGuard({ledger:h.ledger,feePayer:h.facilitatorKey.address,maxAttempts:600,minLamportsBalance:10_000_000n,admission:new AdmissionJournal(join(dir,'admission'),'relay-attempts',600,{reference:'local-faucet-admission',initialMaximum:600,migrations:[]})}),
@@ -65,8 +68,8 @@ async function intent(recipient=h.payer) {
 }
 test('1000 existing tokens, sponsor-paid ATA/fee, one signer and one transfer; no mint or escrow instruction',async()=>{
   const i=await intent();const poolBefore=await balance(h.facilitatorKey.address),payerBefore=await balance(h.payer.address);
-  const receipt=await service.claim(i.token,i.signature);expect(receipt).toMatchObject({status:'finalized',amount:1000,recipient:h.payer.address,finalizedSlot:'10'});
-  expect(await balance(h.payer.address)-payerBefore).toBe(1_000_000_000n);expect(poolBefore-await balance(h.facilitatorKey.address)).toBe(1_000_000_000n);
+  const receipt=await service.claim(i.token,i.signature);expect(receipt).toMatchObject({status:'finalized',amount:mode==='circle'?0.5:1000,recipient:h.payer.address,finalizedSlot:'10'});
+  expect(await balance(h.payer.address)-payerBefore).toBe(BigInt(policy.amount));expect(poolBefore-await balance(h.facilitatorKey.address)).toBe(BigInt(policy.amount));
   expect(h.ledger.submissions).toHaveLength(1);
   const tx=h.ledger.submissions[0]!.transaction,m=getCompiledTransactionMessageDecoder().decode(tx.messageBytes);
   if(m.version!=='legacy')throw Error('expected legacy');
@@ -93,7 +96,7 @@ test.each(['wrong-wallet','message-change','token-change','expiry','wrong-mint',
   if(fault==='message-change')signature=Buffer.from(await signBytes(h.payer.keyPair.privateKey,new TextEncoder().encode(i.message+'changed'))).toString('base64');
   if(fault==='token-change')token=token.slice(0,-1)+(token.endsWith('a')?'b':'a');
   if(fault==='expiry')h.setTime(BigInt(i.expiresAt));
-  if(fault==='wrong-mint'){const other={...policy,mint:h.outsider.address};mkdirSync(join(dir,'other'),{mode:0o700});DevnetFaucetStore.initialize(join(dir,'other'),other);const changed=new DevnetFaucet({...c,store:new DevnetFaucetStore(join(dir,'other'),other)});await expect(changed.claim(token,signature)).rejects.toThrow();}
+  if(fault==='wrong-mint'){const other={...policy,mint:h.outsider.address};mkdirSync(join(dir,'other'),{mode:0o700});if(mode==='circle'){expect(()=>DevnetFaucetStore.initialize(join(dir,'other'),other)).toThrow();}else {DevnetFaucetStore.initialize(join(dir,'other'),other);const changed=new DevnetFaucet({...c,store:new DevnetFaucetStore(join(dir,'other'),other)});await expect(changed.claim(token,signature)).rejects.toThrow();}}
   if(fault==='mainnet')expect(()=>new DevnetFaucet({...c,ledger:{...c.ledger,network:'solana:mainnet'} as any})).toThrow();
   if(!['wrong-mint','mainnet'].includes(fault))await expect(service.claim(token,signature)).rejects.toThrow();
   expect(c.store.summary().used).toBe(0);expect(h.ledger.submissions).toHaveLength(0);
@@ -186,4 +189,60 @@ test('proxy fixes loopback routes, no redirects, private bearer header only',asy
   await proxy.request('/challenge','POST',{recipient:h.payer.address});
   const [url,init]=fetch.mock.calls[0] as any;expect(String(url)).toBe('http://127.0.0.1:28887/faucet/challenge');expect(init.redirect).toBe('error');expect(init.headers.Authorization).toBe(`Bearer ${bearer}`);
   await expect(proxy.request('/settle','POST',{})).rejects.toThrow(/route/);await expect(proxy.request('/claims/'+'a'.repeat(64),'POST',{})).rejects.toThrow(/method/);
+});
+
+test('availability reports treasury liquidity, cooldown, UNKNOWN and RPC failure without sending',async()=>{
+  expect((await service.availability(h.payer.address)).available).toBe(true);
+  const i=await intent();await service.claim(i.token,i.signature);
+  expect(await service.availability(h.payer.address)).toMatchObject({available:false,reason:expect.stringMatching(/cooldown/)});
+  if(mode==='circle') {
+    vi.mocked(c.verifyGenesis!).mockRejectedValue(Error('credential-withheld'));
+    expect(await service.availability(h.outsider.address)).toMatchObject({available:false,reason:expect.stringMatching(/RPC unavailable/)});
+    const next=await intent(h.outsider);
+    await expect(service.claim(next.token,next.signature)).rejects.toThrow();
+    expect(c.store.get(next.id)).toBeUndefined();expect(h.ledger.submissions).toHaveLength(1);
+  }
+});
+test('policy bytes and approved token budget cannot be rewritten across restart',async()=>{
+  const before=c.store.summary();
+  const changed=mode==='circle'?{...policy,tokenSpendLimit:'500000'}:{...policy,reference:'rewritten'};
+  expect(()=>new DevnetFaucetStore(join(dir,'faucet'),changed as FaucetPolicy)).toThrow(/policy drift/);
+  expect(c.store.summary()).toEqual(before);
+});
+test('separately approved smaller Circle token budget is durable and cannot admit a second wallet',async()=>{
+  if(mode!=='circle')return;
+  const small={...policy,schema:2 as const,amount:'500000' as const,profileHash:'a'.repeat(64),tokenSpendLimit:'500000'};
+  mkdirSync(join(dir,'small'),{mode:0o700});DevnetFaucetStore.initialize(join(dir,'small'),small);
+  c.store=new DevnetFaucetStore(join(dir,'small'),small);service=new DevnetFaucet(c);
+  const i=await intent();expect((await service.claim(i.token,i.signature)).status).toBe('finalized');
+  expect(c.store.summary()).toEqual({used:1,maximum:1});
+  service=new DevnetFaucet({...c,store:new DevnetFaucetStore(join(dir,'small'),small)});
+  await expect(service.challenge(h.outsider.address)).rejects.toThrow(/limit/);
+  expect((await service.availability(h.outsider.address)).available).toBe(false);expect(h.ledger.submissions).toHaveLength(1);
+});
+
+test('a new recipient gets the canonical ATA and exactly the profile amount from the dedicated treasury',async()=>{
+  const target=await ata(h.outsider.address,h.mint);expect(await h.ledger.getAccount(target)).toBeNull();
+  const poolBefore=await balance(h.facilitatorKey.address),i=await intent(h.outsider);
+  expect((await service.claim(i.token,i.signature)).status).toBe('finalized');
+  const account=await h.ledger.getAccount(target);expect(account?.owner).toBe(TOKEN_PROGRAM_ADDRESS);
+  expect(getTokenDecoder().decode(account!.data)).toMatchObject({owner:h.outsider.address,mint:h.mint,amount:BigInt(policy.amount)});
+  expect(poolBefore-await balance(h.facilitatorKey.address)).toBe(BigInt(policy.amount));
+  expect(h.ledger.submissions).toHaveLength(1);
+});
+
+test('Circle proxy verifies the actual facilitator faucet profile before any claim or payment health gate',async()=>{
+  if(mode!=='circle'||policy.schema!==2)return;
+  const expected={profileHash:policy.profileHash,mint:policy.mint,network:policy.network,treasury:policy.sponsor,pool:policy.pool,amountAtomic:policy.amount};
+  const fetch=vi.fn(async(_url:unknown,_init?:unknown)=>new Response(JSON.stringify({blocked:false,...expected})));
+  vi.stubGlobal('fetch',fetch);
+  const proxy=devnetFaucetProxy('http://127.0.0.1:28887/',bearer,expected);
+  await proxy.request('/challenge','POST',{recipient:h.payer.address});
+  expect(fetch.mock.calls.map(([url])=>new URL(String(url)).pathname)).toEqual(['/faucet/health','/faucet/challenge']);
+  fetch.mockClear();fetch.mockImplementation(async()=>new Response(JSON.stringify({blocked:false,...expected,mint:h.outsider.address})));
+  await expect(proxy.request('/claim','POST',{})).rejects.toThrow(/peer differs/);
+  await expect(proxy.request('/health','GET')).rejects.toThrow(/peer differs/);
+  expect(fetch.mock.calls.every(([url])=>new URL(String(url)).pathname==='/faucet/health')).toBe(true);
+});
+
 });

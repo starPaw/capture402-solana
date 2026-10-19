@@ -22,6 +22,8 @@ export type GatewayConfig = {
   /** The demo's one allowed merchant wallet (`payTo`) and asset mint; anything else is rejected. */
   allowlist: { merchant: Address; mint: Address };
   faucet?: DevnetFaucet;
+  verifyEconomicIdentity?:()=>Promise<void>;
+  paymentTerms?:{budget:string;network:string;programId:Address};
 };
 
 /** Rejects a `paymentRequirements.payTo`/`asset` outside the demo's fixed allowlist. */
@@ -48,6 +50,15 @@ export function createGatewayApp(facilitator: Facilitator, config: GatewayConfig
   gateway.use("/settle", requireBearerToken(config.bearerToken));
   gateway.use("/verify", requireAllowlisted(config.allowlist));
   gateway.use("/settle", requireAllowlisted(config.allowlist));
+  if(config.paymentTerms)for(const path of ['/verify','/settle'])gateway.use(path,async(c,next)=>{
+    const body=await c.req.json();const r=body?.paymentRequirements,p=config.paymentTerms!;
+    if(r?.amount!==p.budget || r?.network!==p.network || r?.extra?.programId!==p.programId)return c.json({error:'payment differs from approved profile'},403);
+    await next();
+  });
+  if(config.verifyEconomicIdentity)gateway.use('/settle',async(c,next)=>{
+    try {await config.verifyEconomicIdentity!();}catch{return c.json({error:'Devnet RPC identity unavailable; new economics paused.'},503);}
+    await next();
+  });
   if(config.faucet) {
     gateway.use('/settle',async(c,next)=>{if(config.faucet!.blocked())return c.json({error:'Original faucet operation pending or unknown; new economics stopped.'},409);await next();});
     gateway.route('/faucet',createDevnetFaucetApp(config.faucet,config.bearerToken));

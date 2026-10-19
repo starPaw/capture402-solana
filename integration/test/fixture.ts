@@ -22,6 +22,7 @@ import {
   getMintSize,
   getMintToInstruction,
   getTokenDecoder,
+  getTokenEncoder,
 } from "@solana-program/token";
 import { FailedTransactionMetadata, LiteSVM } from "litesvm";
 import { createApp } from "../src/app.js";
@@ -167,17 +168,20 @@ export function inspect(tx: Transaction) {
 
 export type Harness = Awaited<ReturnType<typeof createHarness>>;
 
-export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxComputeUnitLimit" | "maxComputeUnitPriceMicroLamports"> = {}) {
+export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxComputeUnitLimit" | "maxComputeUnitPriceMicroLamports"> = {}, identities?:{mint:Address;programId:Address;network:string}) {
+  const programId=identities?.programId??LOCAL_PROGRAM_ID;
+  const network=identities?.network??NETWORK;
   const svm = new LiteSVM().withSigverify(true);
   // Fail loudly if the binary is missing; never substitute a native processor.
-  svm.addProgramFromFile(LOCAL_PROGRAM_ID, BINARY);
+  svm.addProgramFromFile(programId, BINARY);
   const [payer, server, facilitatorKey, outsider, mintKey, setup] = await Promise.all(
     Array.from({ length: 6 }, () => generateKeyPairSigner()),
   ) as [KeyPairSigner, KeyPairSigner, KeyPairSigner, KeyPairSigner, KeyPairSigner, KeyPairSigner];
   for (const k of [payer, server, facilitatorKey, outsider, setup]) svm.airdrop(k.address, lamports(10_000_000_000n));
-  const mint = mintKey.address;
+  let mint = mintKey.address;
   const ledger = new LiteSvmLedger(svm);
-  const facilitator = new Facilitator({ network: NETWORK, programId: LOCAL_PROGRAM_ID, feePayer: facilitatorKey, ledger, ...feeBounds });
+  if(identities)Reflect.set(ledger,"network",network);
+  const facilitator = new Facilitator({ network, programId: programId, feePayer: facilitatorKey, ledger, ...feeBounds });
   const app = createApp(facilitator);
   const server_: ServerType = await new Promise((resolve, reject) => {
     const s = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => {
@@ -223,6 +227,20 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
     ),
   );
 
+  // Synthetic account snapshots in local LiteSVM only. No network, Circle
+  // mint authority or issuance: exercise canonical addresses with fixture bytes.
+  if(identities) {
+    const originalMint=mint,account=svm.getAccount(mint);
+    if(!account.exists)throw Error('fixture mint missing');
+    svm.setAccount({...account,address:identities.mint});
+    mint=identities.mint;
+    for(const owner of [payer.address,server.address]) {
+      const original=svm.getAccount(await ata(owner,originalMint));
+      if(!original.exists)throw Error('fixture ATA missing');
+      svm.setAccount({...original,address:await ata(owner,mint),data:getTokenEncoder().encode({...getTokenDecoder().decode(original.data),mint})});
+    }
+  }
+
   const setTime = (t: bigint) => {
     const clock = svm.getClock();
     clock.unixTimestamp = t;
@@ -232,7 +250,7 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
 
   const requirements = (over: Partial<PaymentRequirements> = {}, extra: Record<string, unknown> = {}): PaymentRequirements => ({
     scheme: "auth-capture",
-    network: NETWORK,
+    network,
     amount: M.toString(),
     asset: mint,
     payTo: server.address,
@@ -242,7 +260,7 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
       paymentFlow: "escrow",
       captureDeadline: Number(DC),
       refundDeadline: Number(DR),
-      programId: LOCAL_PROGRAM_ID,
+      programId: programId,
       feePayer: facilitatorKey.address,
       ...extra,
     },
@@ -275,7 +293,7 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
     extra?: Instruction[];
   }) => {
     const ix = await authorizeInstruction({
-      programId: LOCAL_PROGRAM_ID,
+      programId: programId,
       payer: payer.address,
       server: o.server ?? server.address,
       mint: o.mint ?? mint,
@@ -293,9 +311,9 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
     });
   };
 
-  const paymentFor = (salt: Uint8Array) => paymentAddress(LOCAL_PROGRAM_ID, payer.address, salt);
+  const paymentFor = (salt: Uint8Array) => paymentAddress(programId, payer.address, salt);
   const stored = async (payment: Address) => ({
-    programId: LOCAL_PROGRAM_ID,
+    programId: programId,
     payment,
     payer: payer.address,
     server: server.address,
@@ -335,7 +353,7 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
   };
   const state = (payment: Address): Payment => {
     const a = svm.getAccount(payment);
-    if (!a.exists || a.programAddress !== LOCAL_PROGRAM_ID) throw new Error("payment missing");
+    if (!a.exists || a.programAddress !== programId) throw new Error("payment missing");
     const p = decodePayment(new Uint8Array(a.data));
     if (!p) throw new Error("payment invalid");
     return p;

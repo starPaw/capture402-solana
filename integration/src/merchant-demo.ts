@@ -1,24 +1,26 @@
+import { CIRCLE_PROFILE, circleApproval, profileHash, type PaymentProfile } from './payment-profile.ts';
 // E2E-only application delegation. Existing merchant remains the onchain signer.
 import {createHmac,randomBytes,timingSafeEqual} from 'node:crypto';
 import {isAddress,getPublicKeyFromAddress,verifySignature,type Address,type SignatureBytes} from '@solana/kit';
 import { operationalValue } from './operational-data.ts';
-export function merchantDemoPolicy():Record<string,unknown> {
+export function merchantDemoPolicy(profile?:PaymentProfile):Record<string,unknown> {
+  if(profile?.id===CIRCLE_PROFILE.id) {const p=circleApproval();return {schema:2,origin:p.origin,network:p.network,programId:p.programId,sponsor:p.sponsor,merchant:p.merchant,mint:p.mint,budget:p.budget,maximumOrders:p.maximumOrders,maximumRelayAttempts:p.maximumRelayAttempts,profileHash:profileHash(p)};}
   const p=operationalValue<Record<string,unknown>>('merchantDemoPolicy');
   if(!p || ['programId','sponsor','merchant','mint'].some(k=>typeof p[k]!=='string'||!isAddress(p[k] as string)) || typeof p.network!=='string' || !/^solana:[-_a-zA-Z0-9]{1,32}$/.test(p.network) || p.schema!==1 || p.budget!=='100000000' || p.maximumOrders!==100 || p.maximumRelayAttempts!==600 || typeof p.origin!=='string' || new URL(p.origin).origin!==p.origin || !p.origin.startsWith('https://'))throw Error('invalid trusted merchant demo policy');
   return p;
 }
-export function validateMerchantDemoPolicy(value:unknown) {
-  const E2E_MERCHANT_DEMO_POLICY=merchantDemoPolicy();
+export function validateMerchantDemoPolicy(value:unknown,profile?:PaymentProfile) {
+  const E2E_MERCHANT_DEMO_POLICY=merchantDemoPolicy(profile);
   const p=value as Record<string,unknown>;
   if(!p || Object.keys(p).sort().join()!==[...Object.keys(E2E_MERCHANT_DEMO_POLICY),'reference'].sort().join() ||
     Object.entries(E2E_MERCHANT_DEMO_POLICY).some(([k,v])=>p[k]!==v) || typeof p.reference!=='string' || !p.reference.trim())throw Error('fixed E2E merchant demo policy required');
 }
 export type MerchantDemoScope={schema:1;origin:string;network:string;programId:Address;sponsor:Address;merchant:Address;mint:Address;
-  budget:'100000000';order:string;payment:Address;payer:Address;scenario:string;captureDeadline:number;refundDeadline:number;capabilityHash:string};
+  budget:'100000000'|'100000';profileHash?:string;order:string;payment:Address;payer:Address;scenario:string;captureDeadline:number;refundDeadline:number;capabilityHash:string};
 type Intent=MerchantDemoScope & {nonce:string;expiresAt:number};
 const canonical=(v:unknown)=>JSON.stringify(v);
 export function merchantDemoMessage(i:Intent) {
-  return `Capture402 Devnet merchant demo controls\nOrigin: ${i.origin}\nPayer: ${i.payer}\nOrder: ${i.order}\nPayment: ${i.payment}\nScenario: ${i.scenario}\nMerchant: ${i.merchant}\nSponsor: ${i.sponsor}\nMint: ${i.mint}\nProgram: ${i.programId}\nBudget: 100 test tokens\nCapture deadline: ${i.captureDeadline}\nRefund deadline: ${i.refundDeadline}\nRequest: ${i.nonce}\nExpires: ${i.expiresAt}\nI allow fixed capture, release and merchant-funded refund actions for this test order only. No other order or wallet transaction authority is granted.`;
+  return `Capture402 Devnet merchant demo controls\nOrigin: ${i.origin}\nPayer: ${i.payer}\nOrder: ${i.order}\nPayment: ${i.payment}\nScenario: ${i.scenario}\nMerchant: ${i.merchant}\nSponsor: ${i.sponsor}\nMint: ${i.mint}\nProgram: ${i.programId}\nBudget: ${i.budget==='100000'?'0.10 USDC':'100 test tokens'}${i.profileHash?`\nProfile: ${i.profileHash}`:''}\nCapture deadline: ${i.captureDeadline}\nRefund deadline: ${i.refundDeadline}\nRequest: ${i.nonce}\nExpires: ${i.expiresAt}\nI allow fixed capture, release and merchant-funded refund actions for this test order only. No other order or wallet transaction authority is granted.`;
 }
 export class MerchantDemoConsent {
   private readonly key:string;
