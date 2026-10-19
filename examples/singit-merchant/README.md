@@ -1,8 +1,9 @@
 # Isolated SingIt merchant and buyer MCP example
 
 Preparation for [MVP-07](https://github.com/bubon-ik/singit-agent-pay/issues/14).
-All files are confined to this folder. No SingIt source, payment service, ABI,
-operator installation or live configuration is modified.
+The buyer and merchant source is confined to this folder and uses a separate
+SingIt checkout. Auth, mandate authority and economic idempotency remain in the
+existing payment service. No operator installation is modified by these examples.
 
 The merchant sells an expense-quality report: exact integer totals by category,
 duplicate invoice IDs, an input digest and the purchased artifact digest. Amounts
@@ -23,25 +24,31 @@ outcome and durable completion. Identical completed requests replay those bytes.
 
 ## Current boundary
 
-This preparation is **mock only**. Both entrypoints refuse devnet before making
-a request. That restriction must remain until the final integrated auth,
-idempotency, storage, custody, recovery and environment gates in MVP-01–06 are
-accepted. This example targets SingIt's trusted-principal and idempotency-aware
-MCP contract, verified against public source
-[`1c4a45e840c7e16445b89594d4a5de7e6b2d7201`](https://github.com/bubon-ik/singit-agent-pay/commit/1c4a45e840c7e16445b89594d4a5de7e6b2d7201).
+**Mock remains the normal development profile.** The separate `devnet` opt-in
+requires an independently pinned private identity file and the matching SingIt
+runtime profile. A missing profile, another deployment/network/mint or different
+payer/merchant refuses before a payment call. The profile is rechecked before
+each payment-service tool call. Complete the source, custody, recovery and
+operational gates in the SingIt release gate before any live startup.
 Every `hold`, `capture` and `release` call requires a stable `idempotencyKey`.
 The purchase uses `report:<orderId>:hold` and `report:<orderId>:capture`; the
 atomic remainder release belongs to that capture intent. Upstream deduplication
 does not enable automatic retries: interrupted local attempts still block new
 purchases and retain their original state.
 
-This is a real MCP client/server integration and a useful deterministic artifact,
-not evidence of a real LLM decision, live devnet payment, independent review or
-full MVP-07 acceptance. A model-based buyer can use the merchant tools later;
-its actual client trace and useful completion remain separate acceptance work.
-Buyer and merchant processes require no model API, model credentials, wallet
-keys, RPC credentials or human approval secrets. Their role tokens are private
-configuration. Only the separate human setup step uses the human route secret.
+The deterministic buyer remains available. `buyer-mcp.mjs` exposes four
+argument-free steps to a real LLM: quote, hold, purchase and retrieval.
+`codex-buyer.mjs` runs the authenticated Codex CLI with those tools, a read-only
+sandbox and disabled shell, apps, plugins, browser and memory. The trusted adapter
+holds the immutable intent/mandate/roles/input/deadlines and supplies stable keys;
+the model cannot select them or issue a mandate. The separate merchant process
+receives only its merchant token. Wallet keys, RPC credentials and human secrets
+stay in the separate operator/payment runtime. CLI authentication stays with the
+CLI; no OpenAI API key is passed to a buyer or merchant tool.
+
+A real model mock run is still mock evidence. Devnet acceptance requires the
+separately authorized bounded run, original finalized outcomes, token effects,
+durable artifact digest and explicit operator/reviewer acceptance.
 
 ## Local use
 
@@ -101,6 +108,44 @@ pending-record cleanup may conservatively leave an order unresolved.
 
 ## Verification
 
+Run a real CLI buyer against a disposable mock payment service, using the
+existing CLI login and a new private directory outside Git:
+
+```sh
+node mock-llm.mjs "$PUBLIC_SINGIT_CHECKOUT" "$NEW_PRIVATE_RUN_DIR"
+```
+
+The operator launcher alone issues the mock mandate. It saves the four real
+model/tool calls, provider usage, useful final answer and mock accounting privately.
+Budget and buyer-role refusals must leave the original two operations unchanged.
+No run directory or interrupted ledger is reused or silently reset.
+
+For an independently prepared run, `node codex-buyer.mjs "$PRIVATE_RUN_JSON"`
+reads a mode-600 file outside Git with `schema: 1`, `environment`, `inputPath`,
+`mandateId`, `intent` and `evidenceDir`. Its environment accepts only the buyer and
+merchant role tokens, local payment URL, profile selection/file, public roles,
+application state paths and optional fixed capture/refund deadlines. The four
+bounded tools are preapproved for this operator-authorized intent; this is not
+permission for arbitrary model tools. Output paths are exclusive, preserving
+earlier traces. A model answer without the four successful calls is rejected.
+
+The `devnet` identity JSON contains exactly `schema`, `name`, `network`,
+`genesisHash`, `programId`, `programDataAddress`, `executableSha256`,
+`deploymentSlot`, `upgradeAuthority`, `abiCommit`, `mint`, `tokenProgram`, `payer`
+and `merchant`. See `profile.mjs` for strict types. Derive the pins from the
+independently accepted existing deployment, not an arbitrary observed account.
+SingIt must configure `SINGIT_UPGRADE_AUTHORITY` (the accepted address or `none`)
+and return the same profile. Its executable hash includes ProgramData padding;
+the Capture402 deployment record hashes the source-sized slice and separately
+checks zero padding, as described in `integration/RECOVERY-OFFLINE.md`.
+
+Devnet receipts bind both original operation IDs/signatures, the full profile,
+H=0/gross capture=650000/release=350000, and the artifact digest. The service's
+`expected` operation field is its post-state; it is not an on-chain precondition.
+Delivery follows original successful outcomes and durable completion. A response
+loss or completion storage failure preserves the original and prevents recapture,
+including further calls in the same model session.
+
 ```sh
 npm test
 SINGIT_CHECKOUT="$PUBLIC_SINGIT_CHECKOUT" npm test
@@ -120,3 +165,6 @@ an RPC request or signs a wallet transaction.
 MCP SDK v1 APIs: [client](https://ts.sdk.modelcontextprotocol.io/client),
 [server](https://ts.sdk.modelcontextprotocol.io/server). This client intentionally
 matches the v1 SDK used by SingIt; it does not silently migrate protocol versions.
+
+Codex client configuration: [MCP](https://learn.chatgpt.com/docs/extend/mcp),
+[non-interactive mode](https://learn.chatgpt.com/docs/non-interactive-mode).

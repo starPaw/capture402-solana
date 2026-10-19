@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { buy, merchantProcessEnv } from '../buyer.mjs';
+import { buy, BuyerSession, merchantProcessEnv } from '../buyer.mjs';
 import { MAXIMUM, MINT, paymentClient, PRICE, report, Store, tool } from '../common.mjs';
 import { Merchant } from '../merchant.mjs';
 
@@ -265,6 +265,18 @@ test('a quote refusal releases the buyer guard before any economic operation', a
   assert.equal(f.captures(), 1);
 });
 
+test('the same model session cannot deliver a candidate after its terminal storage write fails', async t => {
+  const f = buyerFixture(t), session = new BuyerSession(f.request);
+  t.after(() => session.close());
+  await session.step('quote_report'); await session.step('hold_report');
+  const save = f.store.save.bind(f.store);
+  t.mock.method(f.store, 'save', record => { if (record.stage === 'done') throw Error('synthetic terminal failure'); save(record); });
+  await assert.rejects(session.step('purchase_report'), /NO_RETRY/);
+  await assert.rejects(session.step('get_report'), /DURABLE_COMPLETION_REQUIRED/);
+  await assert.rejects(session.step('purchase_report'), /ORIGINAL_OPERATION_UNRESOLVED/);
+  assert.equal(f.holds.length, 1); assert.equal(f.captures(), 1);
+});
+
 test('buyer lost hold reply cannot create a second hold on rerun', async t => {
   const f = fixture(t), q = f.merchant.quote(args);
   let sends = 0;
@@ -275,8 +287,8 @@ test('buyer lost hold reply cannot create a second hold on rerun', async t => {
   assert.equal(sends, 1);
 });
 
-test('devnet profile refuses before any network request or payment', async () => {
-  await assert.rejects(paymentClient({ PAYMENT_PROFILE: 'devnet', PAYMENT_MCP_URL: 'http://127.0.0.1:1/mcp' }), /LIVE_BLOCKED/);
+test('incomplete devnet profile refuses before any network request or payment', async () => {
+  await assert.rejects(paymentClient({ PAYMENT_PROFILE: 'devnet', REPORT_PAYER: 'payer', REPORT_MERCHANT: 'merchant' }, 'buyer'), /PRIVATE_PROFILE_REQUIRED/);
 });
 
 test('payment roles and tokens are required before any network request', async t => {
