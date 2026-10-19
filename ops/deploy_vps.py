@@ -608,6 +608,8 @@ def locked(recovery_only=False):
 
 def deploy(sha):
     with locked():
+        source.require(not SNIPPET.exists() or b'X-Capture402-Environment main-circle' not in SNIPPET.read_bytes(),
+                       'main Circle campaign is active; use its separately reviewed installation procedure and preserve custody')
         source.require(bool(source.SHA_RE.fullmatch(sha)), 'exact main SHA required')
         previous = active_layout()
         source.run('nginx', '-t')

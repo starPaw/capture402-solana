@@ -1,17 +1,16 @@
 // Installation binds each mutable store to its original directory across restarts.
 // Environment selection and a matching namespace alone cannot grant fresh custody.
 import { lstatSync } from 'node:fs';
-import { operationalValue } from './operational-data.ts';
-import { circleApproval, profileHash, requireCircleNamespace } from './payment-profile.ts';
+import { circleApproval, circleNamespacePrefix, circleOperationalValue, profileHash, requireCircleNamespace } from './payment-profile.ts';
 
 export const CIRCLE_STORE_ROLES = ['submissions','relayAdmission','campaignBudget','faucet','resource','orders','reclaims','orderAdmission'] as const;
 export type CircleStoreRole = typeof CIRCLE_STORE_ROLES[number];
 export type CircleCustody = {schema:1;profileHash:string;stores:Record<CircleStoreRole,{path:string;device:string;inode:string}>};
-const prefix='/var/lib/capture402-e2e/circle-usdc-v1/';
 const fail=():never=>{throw Error('Circle custody differs from trusted installation; preserve original stores and UNKNOWN records');};
 
 export function circleCustodyGuard(paths:Partial<Record<CircleStoreRole,string>>):()=>void {
-  const p=operationalValue<CircleCustody>('circleUsdcCustody');
+  const prefix=circleNamespacePrefix();
+  const p=circleOperationalValue<CircleCustody>('Custody');
   if(!p || Object.keys(p).sort().join()!=='profileHash,schema,stores' || p.schema!==1 || p.profileHash!==profileHash(circleApproval()) ||
     !p.stores || Object.keys(p.stores).sort().join()!==[...CIRCLE_STORE_ROLES].sort().join())fail();
   const seenPaths=new Set<string>(),seenIdentities=new Set<string>();

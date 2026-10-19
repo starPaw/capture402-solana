@@ -19,29 +19,32 @@ vi.mock('../src/rpc-ledger.ts',async original=>({...await original<typeof import
 vi.mock('../src/e2e-runtime-policy.ts',async original=>({...await original<typeof import('../src/e2e-runtime-policy.ts')>(),requireE2eRuntimeRpc:()=>{}}));
 vi.mock('../src/circle-custody.ts',()=>({circleCustodyGuard:(paths:unknown)=>{state.custody(paths);throw Error('synthetic custody mismatch');}}));
 
-function configure(selection:string|undefined) {
-  const treasury=address(E2E_MERCHANT_DEMO_POLICY.sponsor),merchant=address(E2E_MERCHANT_DEMO_POLICY.merchant);
-  state.treasury=treasury;state.data={circleUsdcDemoProfile:circleApprovalFixture(treasury,merchant)};
+function configure(selection:string|undefined,installation:'main'|'e2e'='e2e') {
+  const treasury=address(installation==='main'?'2Z8oHviEbrqDD5kg2sW8h8kYceqdVTnrrPL6Lk2nBfRG':E2E_MERCHANT_DEMO_POLICY.sponsor),
+    merchant=address(installation==='main'?E2E_MERCHANT_DEMO_POLICY.mint:E2E_MERCHANT_DEMO_POLICY.merchant);
+  state.treasury=treasury;state.data={[installation==='main'?'circleUsdcMainDemoProfile':'circleUsdcDemoProfile']:circleApprovalFixture(treasury,merchant)};
+  vi.stubEnv('SAC006_CIRCLE_INSTALLATION',installation);
   const env={SOLANA_RPC_URL:'https://synthetic.quiknode.pro/fixture/',SAC006_DEPLOYMENT_RECORD_PATH:'/synthetic/deployment.json',
     SAC006_FACILITATOR_KEYPAIR_PATH:'/synthetic/renamed-treasury.json',SAC006_SERVER_KEYPAIR_PATH:'/synthetic/merchant.json',
     SAC006_ALLOWLIST_MINT:CIRCLE_MINT,SAC006_ALLOWLIST_MERCHANT:merchant,SAC006_FEE_PAYER:treasury,SAC006_ASSET_MINT:CIRCLE_MINT,
     SAC006_BEARER_TOKEN:'synthetic-test-bearer',SAC006_FACILITATOR_URL:'http://synthetic.invalid/',SAC006_STORE_DIR:'/var/lib/capture402-e2e/circle-usdc-v1/resource-empty',
     SAC006_FACILITATOR_JOURNAL_DIR:'/var/lib/capture402-e2e/circle-usdc-v1/submissions-empty',SAC006_E2E_RELAY_ADMISSION_DIR:'/var/lib/capture402-e2e/circle-usdc-v1/relay-empty',
     SAC006_RECLAIM_JOURNAL_DIR:'/var/lib/capture402-e2e/circle-usdc-v1/reclaims-empty',SAC006_E2E_ORDER_ADMISSION_DIR:'/var/lib/capture402-e2e/circle-usdc-v1/orders-empty'};
-  for(const [key,value] of Object.entries(env))vi.stubEnv(key,value);
+  for(const [key,value] of Object.entries(env))vi.stubEnv(key,installation==='main'?value.replace('/var/lib/capture402-e2e/circle-usdc-v1/','/var/lib/capture402/circle-usdc-v1/'):value);
   vi.stubEnv('SAC006_PAYMENT_PROFILE',selection);
 }
 afterEach(()=>{vi.unstubAllEnvs();vi.clearAllMocks();});
-test.each([undefined,LEGACY_PROFILE.id])('both entry points reject Circle treasury in profile %s before RPC, journals or serving',async selection=>{
-  configure(selection);
+test.each([[undefined,'e2e'],[LEGACY_PROFILE.id,'e2e'],[undefined,'main'],[LEGACY_PROFILE.id,'main']] as const)('both entry points reject Circle treasury in profile %s installation %s before RPC, journals or serving',async(selection,installation)=>{
+  configure(selection,installation);
   await expect(startFacilitator()).rejects.toThrow('requires the Circle');
   await expect(startRestaurant()).rejects.toThrow('requires the Circle');
   expect(state.rpc).not.toHaveBeenCalled();expect(state.serve).not.toHaveBeenCalled();expect(state.custody).not.toHaveBeenCalled();
 });
-test('both Circle entry points check selected stores before constructing RPC or opening journals',async()=>{
-  configure(CIRCLE_PROFILE.id);
+test.each(['e2e','main'] as const)('both %s Circle entry points check selected stores before constructing RPC or opening journals',async installation=>{
+  configure(CIRCLE_PROFILE.id,installation);
   await expect(startFacilitator()).rejects.toThrow('synthetic custody mismatch');
-  expect(state.custody).toHaveBeenCalledWith(expect.objectContaining({submissions:process.env.SAC006_FACILITATOR_JOURNAL_DIR,relayAdmission:process.env.SAC006_E2E_RELAY_ADMISSION_DIR}));
+  expect(state.custody).toHaveBeenCalledWith(expect.objectContaining({submissions:process.env.SAC006_FACILITATOR_JOURNAL_DIR,relayAdmission:process.env.SAC006_E2E_RELAY_ADMISSION_DIR,
+    campaignBudget:`/var/lib/${installation==='main'?'capture402':'capture402-e2e'}/circle-usdc-v1/facilitator/campaign-budget`}));
   await expect(startRestaurant()).rejects.toThrow('synthetic custody mismatch');
   expect(state.custody).toHaveBeenCalledWith(expect.objectContaining({resource:process.env.SAC006_STORE_DIR,orders:process.env.SAC006_STORE_DIR+'-restaurant',reclaims:process.env.SAC006_RECLAIM_JOURNAL_DIR,orderAdmission:process.env.SAC006_E2E_ORDER_ADMISSION_DIR}));
   expect(state.rpc).not.toHaveBeenCalled();expect(state.serve).not.toHaveBeenCalled();

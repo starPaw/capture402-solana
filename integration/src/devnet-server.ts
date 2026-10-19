@@ -1,4 +1,4 @@
-import { selectedPaymentProfile, CIRCLE_PROFILE, circleApproval, requireCircleRpc, requireProfileForTreasury } from './payment-profile.ts';
+import { selectedPaymentProfile, CIRCLE_PROFILE, circleApproval, circleNamespacePrefix, requireCircleRpc, requireProfileForTreasury } from './payment-profile.ts';
 import { circleCustodyGuard } from './circle-custody.ts';
 import { operationalValue } from './operational-data.ts';
 import { CampaignBudget, type CampaignPolicy } from './campaign-budget.ts';
@@ -51,7 +51,7 @@ export async function startFacilitator(): Promise<void> {
   requireProfileForTreasury(profile,feePayer.address);
   if(circle && (feePayer.address!==circle.sponsor || requireEnv("SAC006_ALLOWLIST_MINT")!==circle.mint || requireEnv("SAC006_ALLOWLIST_MERCHANT")!==circle.merchant))throw Error("Circle facilitator identities mismatch");
   const guardCustody=circle?circleCustodyGuard({submissions:requireEnv('SAC006_FACILITATOR_JOURNAL_DIR'),relayAdmission:requireEnv('SAC006_E2E_RELAY_ADMISSION_DIR'),
-    campaignBudget:'/var/lib/capture402-e2e/circle-usdc-v1/facilitator/campaign-budget',faucet:'/var/lib/capture402-e2e/circle-usdc-v1/facilitator/faucet'}):()=>{};
+    campaignBudget:circleNamespacePrefix()+'facilitator/campaign-budget',faucet:circleNamespacePrefix()+'facilitator/faucet'}):()=>{};
   const e2e = !!circle || feePayer.address === operationalValue<string>('sponsorAddress') || requireEnv('SAC006_FACILITATOR_KEYPAIR_PATH').includes('/capture402-e2e/');
   if (e2e) requireE2eRuntimeRpc(rpcUrl,record);
 
@@ -63,7 +63,7 @@ export async function startFacilitator(): Promise<void> {
   // Binding to the E2E sponsor prevents a missing/renamed environment profile bypass.
   let sponsorBudget, admission, campaignBudget:CampaignBudget|undefined;
   if (e2e) {
-    const directory = circle?'/var/lib/capture402-e2e/circle-usdc-v1/facilitator/campaign-budget':'/var/lib/capture402-e2e/facilitator/campaign-budget';
+    const directory = circle?circleNamespacePrefix()+'facilitator/campaign-budget':'/var/lib/capture402-e2e/facilitator/campaign-budget';
     const policy = JSON.parse(readFileSync(`${directory}/policy.json`,'utf8')) as CampaignPolicy;
     if (policy.spendLimit !== (circle?.sponsorSpendLimit ?? "1000000000") || policy.sponsor !== feePayer.address || policy.browser !== operationalValue<string>('browserAddress') || policy.genesisHash !== record.network.genesisHash) throw Error('E2E campaign policy/runtime mismatch');
     requireE2eRuntimeRpc(rpcUrl,record);
@@ -80,7 +80,7 @@ export async function startFacilitator(): Promise<void> {
     admission,
   });
   let faucet:DevnetFaucet|undefined;
-  const faucetDirectory=circle?'/var/lib/capture402-e2e/circle-usdc-v1/facilitator/faucet':'/var/lib/capture402-e2e/facilitator/faucet';
+  const faucetDirectory=circle?circleNamespacePrefix()+'facilitator/faucet':'/var/lib/capture402-e2e/facilitator/faucet';
   const faucetPolicyPath=process.env.SAC006_E2E_FAUCET_POLICY_PATH;
   if(circle && !faucetPolicyPath)throw Error("Circle faucet approval required");
   if(e2e && existsSync(faucetDirectory) && !faucetPolicyPath)throw Error('existing faucet custody requires its compatible configured reader');

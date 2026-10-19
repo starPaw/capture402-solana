@@ -76,6 +76,16 @@ class TransactionTests(unittest.TestCase):
     def assert_preserved(self):
         self.assertEqual(host.inventory([host.PRIVATE, host.STATE]), self.before)
 
+    def test_legacy_deployer_cannot_replace_active_main_circle_ingress(self):
+        original = b'add_header X-Capture402-Environment main-circle always;\n'
+        host.SNIPPET.write_bytes(original)
+        with self.assertRaisesRegex(RuntimeError, 'main Circle campaign is active'):
+            host.deploy(NEW)
+        self.active_layout_mock.assert_not_called()
+        self.manually_fetch_archive_mock.assert_not_called()
+        self.assertEqual(host.SNIPPET.read_bytes(), original)
+        self.assert_preserved()
+
     def test_first_migration_installs_route_and_units_in_one_transaction(self):
         host.deploy(NEW)
         self.assertEqual(source.current_sha(), NEW)

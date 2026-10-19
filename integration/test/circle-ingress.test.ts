@@ -17,6 +17,7 @@ const fragments = [
   ['stable', 'nginx-resource.conf', 8788],
   ['development', 'dev/nginx-routes.conf', 18888],
   ['e2e', 'e2e/nginx-public-demo.conf', 28888],
+  ['main-circle', 'main/nginx-public-demo.conf', 8898],
 ] as const;
 const readFragment = (name:string) => readFileSync(new URL(`../deploy/${name}`, import.meta.url), 'utf8');
 
@@ -29,12 +30,13 @@ test.each(fragments)('%s ingress admits the exact profile module as GET only', (
   for (const path of ['/assets/payment-profile.js/', '/assets/payment-profile.js.extra', '/assets/payment-profileXjs', '/assets/private.js']) expect(pattern.test(path)).toBe(false);
 });
 
-test('only E2E exposes the exact read-only faucet status route', () => {
-  const e2e = readFragment('e2e/nginx-public-demo.conf');
-  const match = e2e.match(/location = \/api\/faucet\/status \{([\s\S]*?)\n\}/);
-  expect(match).not.toBeNull();
-  expect(match![1]).toContain('if ($request_method != GET) { return 405; }');
-  expect(match![1]).toContain('proxy_pass http://127.0.0.1:28888;');
+test('only separately installed public campaigns expose the exact read-only faucet status route', () => {
+  for(const [name,port] of [['e2e/nginx-public-demo.conf',28888],['main/nginx-public-demo.conf',8898]] as const) {
+    const match = readFragment(name).match(/location = \/api\/faucet\/status \{([\s\S]*?)\n\}/);
+    expect(match).not.toBeNull();
+    expect(match![1]).toContain('if ($request_method != GET) { return 405; }');
+    expect(match![1]).toContain(`proxy_pass http://127.0.0.1:${port};`);
+  }
   for (const name of ['nginx-resource.conf', 'dev/nginx-routes.conf']) expect(readFragment(name)).not.toContain('/api/faucet/status');
 });
 
@@ -91,6 +93,8 @@ http {
   access_log off;
   map $request_method $capture402_e2e_public_post { default ""; POST $binary_remote_addr; }
   limit_req_zone $capture402_e2e_public_post zone=capture402_e2e_demo_public:1m rate=20r/m;
+  map $request_method $capture402_main_public_post { default ""; POST $binary_remote_addr; }
+  limit_req_zone $capture402_main_public_post zone=capture402_main_demo_public:1m rate=20r/m;
   client_body_temp_path "${directory}/body";
   proxy_temp_path "${directory}/proxy";
   server {
@@ -130,8 +134,8 @@ http {
     for (const path of ['/assets/payment-profile.js/','/assets/payment-profile.js.extra','/assets/payment-profileXjs']) expect((await https(path)).status).toBe(404);
     expect(upstream).toHaveLength(before);
   });
-  test('status preserves recipient and availability through E2E only, with no signing route exposed', async () => {
-    if (environment==='e2e') {
+  test('status preserves recipient and availability through approved public campaigns, with no facilitator route exposed', async () => {
+    if (environment==='e2e' || environment==='main-circle') {
       for (const state of [{available:true,reason:'',nextEligibleAt:0},
         {available:false,reason:'Treasury token supply low; operator refill required.',nextEligibleAt:0},
         {available:false,reason:'Claim cooldown active: one claim per 24 hours.',nextEligibleAt:2000000000},
