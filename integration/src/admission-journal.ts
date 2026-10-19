@@ -9,10 +9,11 @@ import { createDurableFile, replaceDurableFile, ensureDurableDirectory } from '.
 import { operationalValue } from './operational-data.ts';
 type Migration={step:'expired-order'|'demo-runs';archive:string;reason:string;oldMaximum:number;oldUsed:number;carryForward:number;newMaximum:number};
 export type AdmissionContract={reference:string;initialMaximum:number;migrations:Migration[]};
-export function loadAdmissionContract(kind:AdmissionPolicy['kind']):AdmissionContract {
-  const contracts=operationalValue<Partial<Record<AdmissionPolicy['kind'],AdmissionContract>>>('admissionContracts');
+export function loadAdmissionContract(kind:AdmissionPolicy['kind'],profile?:'circle-usdc-v1'):AdmissionContract {
+  const contracts=operationalValue<Partial<Record<AdmissionPolicy['kind'],AdmissionContract>>>(profile==='circle-usdc-v1'?'circleUsdcAdmissionContracts':'admissionContracts');
   const contract=contracts?.[kind];
   if(!contract)throw Error('missing trusted admission contract');
+  if(profile && (contract.initialMaximum!==(kind==='orders'?100:600) || !Array.isArray(contract.migrations) || contract.migrations.length!==0))throw Error('Circle campaign requires separately approved fresh admission contracts');
   return contract;
 }
 function validateContract(c:AdmissionContract) {

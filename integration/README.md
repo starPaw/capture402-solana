@@ -17,6 +17,8 @@ RESTAURANT_PLAYWRIGHT_MODULE="$PLAYWRIGHT_MODULE" RESTAURANT_QA_OUTPUT="$QA_OUTP
 
 These are DOM fixtures, not live-wallet acceptance. Keep screenshots, logs and receipts outside Git until individually reviewed.
 
+The Circle browser fixture also supports `SAC006_TEST_NGINX=/absolute/path/to/nginx`: run `browser/circle-usdc-check.mjs` with the restaurant Playwright/output variables above. It starts an isolated HTTPS proxy on a temporary loopback port using the checked-in E2E routes, preserving the HTTP method and path rules. Synthetic status/order responses pass through nginx rather than browser request interception; the fixture performs no signing or POST. Set `SAC006_TEST_NGINX` for `npm test` to exercise the ingress tests, and `SAC006_TEST_NGINX_ISOLATED_PORTS=1` when fixed fixture upstream ports are occupied. No installed nginx configuration or service is used.
+
 ## Runtime setup
 
 Run `node --experimental-strip-types src/presentation-preview.ts` from `integration/` for an unconfigured, loopback-only preview on port 18788. It exposes the public presentation and returns 503 for economic API routes; it reads no installed acceptance data or credentials. The configured restaurant server retains its mandatory trusted deployment checks. Economic services require independently accepted deployment data, source-built executable bytes, configured network identity, private credentials and isolated durable storage. See [deploy/README.md](deploy/README.md) and the validated schema in [src/operational-data.ts](src/operational-data.ts). Operational policy uses the fixed administrator-owned `/etc/capture402/operational-data.json` trust boundary; caller-controlled configuration must not replace trusted acceptance.
@@ -36,3 +38,7 @@ At or after the original capture deadline, the payer can reclaim a positive unus
 Use [src/reclaim-offer-cli.ts](src/reclaim-offer-cli.ts) to prepare the unsigned offer and review its digest before signing. Preserve the exact reviewed message, offer, signed wire and journal. Submit the original signed bytes once; after uncertainty observe the original signature and retain the reservation. Missing history is not proof of non-execution. [src/reclaim.ts](src/reclaim.ts) is the direct payer CLI. Review each CLI's required arguments and validation before use. Browser reclaim uses application routes and is not a demonstration of recovery with that server unavailable.
 
 Refund is different: before the refund deadline the merchant funds it from its own token account, bounded by captured, unrefunded value. It needs merchant consent and liquidity and never restores the authorization budget.
+
+## Circle USDC payment lab
+
+The optional `circle-usdc-v1` profile distributes 0.50 Circle Devnet USDC and authorizes a maximum of 0.10 USDC for the payment lab, with 0.04 and 0.025 captures and a 0.035 release. The normal-path refund example is 0.01 USDC. A root-owned profile approval, separately approved campaign budget, dedicated pre-funded treasury, isolated storage and explicitly approved QuickNode Devnet endpoint are required. Legacy mode remains the default; the separate paid-report example retains its existing amounts. See [Circle setup](../ops/CIRCLE-USDC-SETUP.md) for configuration fields, policy hash boundaries, manual Circle Faucet funding and separately authorized live verification.

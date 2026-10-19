@@ -1,3 +1,4 @@
+import { browserProfile, profileAmount, profileLabel } from './payment-profile.js';
 import { wallets, onWallets, connect, walletSign, walletSignFaucetRequest, walletSignMerchantDemo, walletSignOrderSession, encodeEnvelope, decodeEnvelope, signingReport, assertDevnetPolicy } from './wallet.js';
 import { definitiveReceipt, recoveryMatches, authorizeIsolationMatches } from './receipt-state.js';
 const $ = id => document.getElementById(id);
@@ -8,6 +9,11 @@ const diagnosticOnly = new URLSearchParams(location.search).get('walletDiagnosti
 let nextTarget = '', lastActionError = '', sessionLost = false;
 let walletEpoch = 0, restoringWallet = false, manualWalletChoice = false;
 const reconnectAttempts = new WeakSet();
+let faucetAvailability;
+const amount=key=>profileAmount(config,key);
+const amountText=key=>profileLabel(config,key);
+const circle=()=>browserProfile(config).id==='circle-usdc-v1';
+const claimLabel=()=>circle()?`Get ${amountText('faucetAmount').replace(' USDC',' Devnet USDC')}`:`Claim ${amountText('faucetAmount')}`;
 let config, order, scenario = 'normal', connection, busy = false, stale = false, reading = false;
 let anchor = { clock: 0, at: Date.now() }, merchantSecret = '', accessId = '', credentialEpoch = 0, renderedClockStage = '', demoGrant;
 const storedId = () => localStorage.getItem('capture402-order');
@@ -63,13 +69,13 @@ function renderWallet() {
 }
 function authorizeReason() {
   return faucetStopped() ? 'Check the original test-token request before new economics.' : busy ? 'One operation is already in flight.' : stale ? 'Current order state unavailable; refresh the original order.' : storedId() && !order ? 'Original order could not be restored. Keep its identifier and receipts; no replacement payment.' : !config?.configured ? 'Devnet backend provisioning required.' : uncertain() ? 'Original response unknown; inspect its signatures. No new signature or offer.' : !connection?.account ? 'Connect the payer wallet first.' : order && order.payer !== connection.account.address ? 'Connect the original payer wallet.' :
-    !order ? 'Prepare an unsigned offer and review its original terms first.' : order?.status === 'abandoned' ? 'Expired unfunded authorization archived. Explicitly prepare a new offer; original terms remain unchanged.' : order && order.status !== 'draft' ? 'Authorization submitted; original receipt below.' : signedOffer() ? 'Original wallet consent retained. Inspect the original draft; no new signature.' : expiredDraft() ? 'Unsigned offer expired. Explicitly prepare a new offer before signing.' : order?.balances?.payer && (order.balances.payer.amount === null || order.balances.payer.amount < 100) ? order.balances.payer.reason || 'Payer needs 100 test-mint tokens; operator funding required.' : '';
+    !order ? 'Prepare an unsigned offer and review its original terms first.' : order?.status === 'abandoned' ? 'Expired unfunded authorization archived. Explicitly prepare a new offer; original terms remain unchanged.' : order && order.status !== 'draft' ? 'Authorization submitted; original receipt below.' : signedOffer() ? 'Original wallet consent retained. Inspect the original draft; no new signature.' : expiredDraft() ? 'Unsigned offer expired. Explicitly prepare a new offer before signing.' : order?.balances?.payer && (order.balances.payer.amount === null || order.balances.payer.amount < amount('budget')) ? order.balances.payer.reason || `Payer needs ${amountText('budget')}; operator funding required.` : '';
 }
 function refundReason() {
   const refundable = Number(order.refundableBaseUnits) / 1_000_000;
-  const amount = order.scenario === 'normal' ? 10 : refundable;
-  if (!Number.isFinite(refundable) || !Number.isFinite(amount) || amount <= 0 || refundable < amount) return 'Finalized refundable balance cannot cover the selected refund.';
-  if (order.balances?.merchant?.amount === null || !Number.isFinite(order.balances?.merchant?.amount) || order.balances.merchant.amount < amount) return 'Merchant test-token balance cannot fund this refund.';
+  const refund = order.scenario === 'normal' ? amount('refundExample') : refundable;
+  if (!Number.isFinite(refundable) || !Number.isFinite(refund) || refund <= 0 || refundable < refund) return 'Finalized refundable balance cannot cover the selected refund.';
+  if (order.balances?.merchant?.amount === null || !Number.isFinite(order.balances?.merchant?.amount) || order.balances.merchant.amount < refund) return 'Merchant test-token balance cannot fund this refund.';
   return '';
 }
 function merchantReason(action) {
@@ -81,8 +87,18 @@ function render() {
   $('session-recovery').hidden = !config?.publicMerchantDemoEnabled || !storedId() || !!order && !sessionLost || diagnosticOnly;
   $('restore-order-session').disabled = busy || reading || !safeOperatorTransport() || !connection?.account;
   $('faucet-panel').hidden = false;
-  $('claim-test-tokens').disabled = !config?.faucetEnabled || diagnosticOnly || busy || faucetStopped() || uncertain() || stale || !connection?.account || !!order && (order.status==='draft' || order.remaining>0 || order.status==='pending');
-  $('faucet-availability').textContent = !config ? 'Checking test-token availability…' : !config.faucetEnabled ? 'Test-token claims are unavailable on this deployment.' : diagnosticOnly ? 'Test-token claims are disabled in signing diagnostics.' : busy ? 'Wait for the current operation.' : faucetStopped() ? 'Check the original token request below before another claim.' : uncertain() ? 'Original payment outcome unknown. Inspect its signatures before claiming tokens.' : stale ? 'Current state unavailable. Observe original state before claiming tokens.' : !connection?.account ? 'Connect your Devnet wallet to claim free test tokens.' : order && (order.status === 'draft' || order.remaining > 0 || order.status === 'pending') ? 'The original order must be resolved before another token claim.' : 'Ready: claim 1,000 free test tokens with a wallet message.';
+  $('claim-test-tokens').textContent=claimLabel();
+  $('faucet-hint').textContent=`A separate wallet message requests ${amountText('faucetAmount')}; one claim per wallet every 24 hours, limited treasury supply and approved campaign budget. Devnet SOL for payer reclaim fees is separate.`;
+  $('lab-intro').textContent=`Reserve ${amountText('budget')}. Capture in parts. Return unused.`;
+  $('terms-heading').textContent=`${amountText('budget')} maximum`;
+  document.querySelector('[data-action=beer]').textContent=circle()?`Capture ${amountText('firstCapture')}`:`Collect ${amount('firstCapture')}`;
+  document.querySelector('[data-action=salmon]').textContent=circle()?`Capture ${amountText('secondCapture')}`:`Collect ${amount('secondCapture')}`;
+  document.querySelector('[data-action=atomic]').textContent=`Capture ${amountText('firstCapture')} + release ${amount('budget')-amount('firstCapture')} ${browserProfile(config).assetLabel} atomically`;
+  document.querySelector('[data-scenario=normal]').textContent=`Complete · capture ${amountText('firstCapture')} + ${amountText('secondCapture')}, release ${amountText('releaseRemainder')}`;
+  document.querySelector('[data-scenario=partial-reclaim]').textContent=`Stop early · capture ${amountText('firstCapture')}, reclaim remainder`;
+  document.querySelector('.network').textContent=`Solana Devnet · ${browserProfile(config).assetLabel}`;
+  $('claim-test-tokens').disabled = !config?.faucetEnabled || circle() && faucetAvailability?.available!==true || diagnosticOnly || busy || faucetStopped() || uncertain() || stale || !connection?.account || !!order && (order.status==='draft' || order.remaining>0 || order.status==='pending');
+  $('faucet-availability').textContent = !config ? 'Checking test-token availability…' : !config.faucetEnabled ? 'Test-token claims are unavailable on this deployment.' : diagnosticOnly ? 'Test-token claims are disabled in signing diagnostics.' : busy ? 'Wait for the current operation.' : faucetStopped() ? 'Check the original token request below before another claim.' : uncertain() ? 'Original payment outcome unknown. Inspect its signatures before claiming tokens.' : stale ? 'Current state unavailable. Observe original state before claiming tokens.' : !connection?.account ? 'Connect your Devnet wallet to claim free test tokens.' : order && (order.status === 'draft' || order.remaining > 0 || order.status === 'pending') ? 'The original order must be resolved before another token claim.' : circle() && faucetAvailability?.available!==true?faucetAvailability?.reason||'Checking Devnet treasury availability…':`Ready: request ${amountText('faucetAmount')} with a wallet message.`;
   $('refresh-test-tokens').hidden = !faucetStopped();
   $('refresh-test-tokens').disabled = busy;
   $('enable-demo-controls').hidden=!config?.publicMerchantDemoEnabled;
@@ -98,13 +114,13 @@ function render() {
   const state = order?.status ?? 'idle';
   $('payment-state').textContent = stale ? sessionLost ? 'Session expired · restore access' : 'State unavailable · paused' : isolatedAuthorize() ? 'Expired authorization preserved · new order available' : continued() ? 'Hold reclaimed · original refusal archived' : recoveryAllowed() ? 'Historical capture evidence retained · payer reclaim separate' : uncertain() ? 'Unknown response · locked' : ({ idle:'Awaiting authorization', abandoned:'Expired unfunded draft archived', draft:'Unsigned offer', active:'Finalized', closed:'Hold closed', pending:'Pending · inspect signatures', rejected:'Authorization refused' })[state] ?? state;
   $('payment-state').classList.toggle('live', !stale && !uncertain() && ['active','closed'].includes(state));
-  $('released-copy').hidden = !(order?.released > 0); $('released-copy').textContent = order?.released > 0 ? `${order.released} test tokens released to payer` : 'No tokens released yet.';
-  const reason = authorizeReason(); $('authorize').disabled = !!reason; $('authorize-reason').textContent = reason || 'Ready: sign the exact 100 test-token offer. Settlement must finalize.';
-  $('authorize').textContent = diagnosticOnly ? 'Sign only · compare wallet response' : busy ? 'Waiting for original result…' : 'Authorize 100 test tokens';
+  $('released-copy').hidden = !(order?.released > 0); $('released-copy').textContent = order?.released > 0 ? `${order.released} ${browserProfile(config).assetLabel} released to payer` : 'No tokens released yet.';
+  const reason = authorizeReason(); $('authorize').disabled = !!reason; $('authorize-reason').textContent = reason || `Ready: sign the exact ${amountText('budget')} offer. Settlement must finalize.`;
+  $('authorize').textContent = diagnosticOnly ? 'Sign only · compare wallet response' : busy ? 'Waiting for original result…' : `Authorize ${circle()?'up to ':''}${amountText('budget')}`;
   document.querySelectorAll('[data-action]').forEach(b => { const reason = merchantReason(b.dataset.action); b.disabled = !!reason; b.title = reason; document.querySelector(`[data-reason="${b.dataset.action}"]`).textContent = reason || 'Ready.'; });
   document.querySelector('[data-action=atomic]').closest('.step').hidden = (order?.scenario ?? scenario) !== 'atomic';
-  document.querySelector('[data-action=refund]').textContent = (order?.scenario ?? scenario) === 'normal' ? 'Refund 10' : 'Merchant-funded refund';
-  $('finish').textContent = `Release unused ${(order?.scenario ?? scenario) === 'refund' ? 60 : 35}`;
+  document.querySelector('[data-action=refund]').textContent = (order?.scenario ?? scenario) === 'normal' ? `Refund ${circle()?amountText('refundExample'):amount('refundExample')}` : 'Merchant-funded refund';
+  $('finish').textContent = circle()?`Release ${(order?.scenario ?? scenario)==='refund'?`${amount('budget')-amount('firstCapture')} ${browserProfile(config).assetLabel}`:amountText('releaseRemainder')}`:`Release unused ${(order?.scenario ?? scenario)==='refund'?amount('budget')-amount('firstCapture'):amount('releaseRemainder')}`;
   $('unlock-merchant').disabled = busy || !safeOperatorTransport() || !order || uncertain() || stale;
   $('lock-merchant').hidden = !merchantSecret && !demoGrant; $('merchant-secret').disabled = busy || !!merchantSecret;
   if (!safeOperatorTransport()) $('operator-status').textContent = 'Operator-only controls require HTTPS on the configured Devnet demo.';
@@ -129,7 +145,7 @@ function render() {
   $('payment-id').innerHTML = order ? addressLink(order.payment) : 'No original offer';
   $('state-pair').textContent = order?.heldBaseUnits !== undefined ? `H=${order.heldBaseUnits} · F=${order.refundableBaseUnits} base units (finalized)` : 'No finalized payment account yet.';
   $('deadline-terms').textContent = order ? `Capture: ${new Date(order.captureDeadline * 1000).toISOString()}. Refund: ${new Date(order.refundDeadline * 1000).toISOString()}. Immutable original terms; eligibility uses Solana Clock.` : '150 seconds from offer generation; refund deadline 30 seconds later. UI timer is informational.';
-  if (order?.events?.length) $('timeline').innerHTML = order.events.map(e => `<div class="timeline-event"><span>${e.status === 'finalized' ? '✓' : '◷'}</span><div><strong>${esc(e.label)} · ${esc(e.amount)} test tokens</strong><div class="event-meta"><small>${esc(new Date(e.at).toLocaleTimeString())}</small><span>${esc(e.status)}${e.chainStatus?.commitment ? ` · ${esc(e.chainStatus.commitment)}` : ''}</span></div></div>${e.signature ? `<a href="${explorer('tx', e.signature)}" target="_blank" rel="noopener noreferrer">Explorer receipt ↗</a>` : '<small>No submitted signature</small>'}</div>`).join('');
+  if (order?.events?.length) $('timeline').innerHTML = order.events.map(e => `<div class="timeline-event"><span>${e.status === 'finalized' ? '✓' : '◷'}</span><div><strong>${esc(e.label)} · ${esc(e.amount)} ${esc(browserProfile(config).assetLabel)}</strong><div class="event-meta"><small>${esc(new Date(e.at).toLocaleTimeString())}</small><span>${esc(e.status)}${e.chainStatus?.commitment ? ` · ${esc(e.chainStatus.commitment)}` : ''}</span></div></div>${e.signature ? `<a href="${explorer('tx', e.signature)}" target="_blank" rel="noopener noreferrer">${esc(e.signature)} ↗</a>` : '<small>No submitted signature</small>'}</div>`).join('');
   else $('timeline').innerHTML = '<p>No transactions yet. Only original transaction signatures link to Devnet Explorer.</p>';
   renderedClockStage = clockStage(); renderWallet(); renderClock(); renderLab();
 }
@@ -139,17 +155,17 @@ function renderLab() {
   const currentScenario = order?.scenario ?? scenario;
   const known = !!order && order.heldBaseUnits !== undefined;
   $('original-order').textContent = order ? `Original order ${order.id} · ${currentScenario}` : storedId() ? `Retained original order ${storedId()} · restoration required` : 'No original offer issued.';
-  $('original-terms').textContent = order ? `Original maximum: 100 test tokens. Capture deadline: ${new Date(order.captureDeadline * 1000).toISOString()}. Refund deadline: ${new Date(order.refundDeadline * 1000).toISOString()}. These terms cannot be extended.` : 'The capture deadline is fixed when the offer is issued. Review the unsigned offer before signing; new terms require a separate authorization.';
-  $('path-description').textContent = currentScenario === 'partial-reclaim' ? 'Collect 40, then wait for the original deadline and request payer reclaim of the unused 60. No work is performed.' : currentScenario === 'normal' ? 'Collect 40, collect 25, then explicitly release unused 35. No work is performed.' : `Advanced path: ${currentScenario}. Its original scenario and payment rules remain in force.`;
+  $('original-terms').textContent = order ? `Original maximum: ${amountText('budget')}. Capture deadline: ${new Date(order.captureDeadline * 1000).toISOString()}. Refund deadline: ${new Date(order.refundDeadline * 1000).toISOString()}. These terms cannot be extended.` : 'The capture deadline is fixed when the offer is issued. Review the unsigned offer before signing; new terms require a separate authorization.';
+  $('path-description').textContent = currentScenario === 'partial-reclaim' ? `Capture ${amountText('firstCapture')}, then wait for the original deadline and request payer reclaim of the unused ${amount('budget')-amount('firstCapture')} ${browserProfile(config).assetLabel}. No work is performed.` : currentScenario === 'normal' ? `Capture ${amountText('firstCapture')}, capture ${amountText('secondCapture')}, then explicitly release ${amountText('releaseRemainder')}. No work is performed.` : `Advanced path: ${currentScenario}. Its original scenario and payment rules remain in force.`;
   const number = value => Number.isFinite(value) ? value.toLocaleString('en-US', { maximumFractionDigits:6 }) : '—';
   $('released').textContent = known ? number(order.released) : '—';
   if (!known) for (const id of ['captured','remaining']) $(id).textContent = '—';
-  $('totals-caption').textContent = stale ? 'Last observed amounts; current finalized state unavailable.' : uncertain() || order?.status === 'pending' ? 'Original snapshot only; pending or UNKNOWN operations may change these amounts.' : known ? 'Finalized payment snapshot · test tokens. Merchant-funded refunds are separate in Advanced.' : 'No finalized payment account observed; unavailable amounts are not zero.';
-  for (const [id,key] of [['bar-paid','captured'],['bar-held','remaining'],['bar-returned','released']]) $(id).style.width = known && Number.isFinite(order[key]) ? `${Math.max(0,Math.min(100,order[key]))}%` : '0%';
+  $('totals-caption').textContent = stale ? 'Last observed amounts; current finalized state unavailable.' : uncertain() || order?.status === 'pending' ? 'Original snapshot only; pending or UNKNOWN operations may change these amounts.' : known ? `Finalized payment snapshot · ${browserProfile(config).assetLabel}. Merchant-funded refunds are separate in Advanced.` : 'No finalized payment account observed; unavailable amounts are not zero.';
+  for (const [id,key] of [['bar-paid','captured'],['bar-held','remaining'],['bar-returned','released']]) $(id).style.width = known && Number.isFinite(order[key]) ? `${Math.max(0,Math.min(100,order[key]/amount('budget')*100))}%` : '0%';
   const events = order?.events ?? [];
   const finalized = events.filter(e => e.status === 'finalized').length;
   const unresolved = events.filter(e => ['pending','prepared'].includes(e.status)).length;
-  $('receipt-summary').textContent = order ? `${finalized} finalized · ${unresolved} prepared or pending · ${events.filter(e=>e.status==='rejected').length} rejected. ${known ? `Paid ${number(order.captured)}, held ${number(order.remaining)}, returned unused ${number(order.released)} test tokens.` : 'No finalized account observed.'} Original events and signatures are retained below.` : 'No original receipts yet. Approval alone does not confirm payment.';
+  $('receipt-summary').textContent = order ? `${finalized} finalized · ${unresolved} prepared or pending · ${events.filter(e=>e.status==='rejected').length} rejected. ${known ? `Paid ${number(order.captured)}, held ${number(order.remaining)}, returned unused ${number(order.released)} ${browserProfile(config).assetLabel}.` : 'No finalized account observed.'} Original events and signatures are retained below.` : 'No original receipts yet. Approval alone does not confirm payment.';
   $('prepare-offer').disabled = busy || reading || stale || faucetStopped() || !config?.configured || !connection?.account || !!order || !!storedId();
   let title = 'Check readiness', message = '', actor = 'Observe only', label = 'Observe original state', target = 'refresh';
   const choose = (heading, text, role, button, id) => { title=heading;message=text;actor=role;label=button;target=id; };
@@ -164,13 +180,13 @@ function renderLab() {
   else if (order?.status === 'pending' && !isolatedAuthorize()) choose('Pending · await finalized evidence', 'Inspect the original signature. No new authorization or merchant action is eligible while this operation is pending.', 'Read-only observation', 'Observe original state', 'refresh');
   else if (canReplace()) choose(order.status === 'closed' ? 'Completed · hold closed' : 'Original preserved', isolatedAuthorize() ? 'Original outcome remains UNKNOWN and its reserve is retained. Only the existing verified isolation permits an explicit unsigned successor.' : 'Inspect original receipts. You may explicitly prepare a separate offer under new terms; this does not reset the original deadline.', 'Payer · unsigned preparation only', connection?.account ? $('new-budget').textContent : 'Connect wallet for a new offer', connection?.account ? 'new-budget' : 'connect-wallet');
   else if (!connection?.account || order && connection.account.address !== order.payer) choose('Connect the payer wallet', order ? 'Use the original payer wallet. This order and its immutable terms stay selected.' : 'Connection moves no tokens. Then prepare an unsigned offer to review the actual terms.', 'Payer · connection only', 'Connect wallet', 'connect-wallet');
-  else if (!order && /test.mint|funding required|needs 100|token account missing/i.test(lastActionError)) choose('Test tokens required', lastActionError + ' Devnet SOL is also needed for reclaim fees.', 'Payer · separate message consent if available', !$('claim-test-tokens').disabled ? 'Request 1,000 test tokens' : 'Inspect funding requirements', !$('claim-test-tokens').disabled ? 'claim-test-tokens' : 'advanced');
-  else if (!order) choose('Prepare original terms', 'Request an unsigned 100-test-token offer, then review its original deadline before a separate wallet signature.', 'Payer · unsigned preparation only', 'Prepare unsigned offer', 'prepare-offer');
+  else if (!order && /test.mint|funding required|needs 100|token account missing/i.test(lastActionError)) choose('Test tokens required', lastActionError + ' Devnet SOL is also needed for reclaim fees.', 'Payer · separate message consent if available', !$('claim-test-tokens').disabled ? claimLabel() : 'Inspect funding requirements', !$('claim-test-tokens').disabled ? 'claim-test-tokens' : 'advanced');
+  else if (!order) choose('Prepare original terms', `Request an unsigned ${amountText('budget')} offer, then review its original deadline before a separate wallet signature.`, 'Payer · unsigned preparation only', 'Prepare unsigned offer', 'prepare-offer');
   else if (order.status === 'draft') {
     if (signedOffer()) choose('Wallet approval retained', /reject|declin|denied|cancel/i.test(lastActionError) ? 'Wallet approval was declined. The original attempt is retained; do not assume non-execution or sign again. Inspect this order.' : 'The original wallet consent attempt is retained. Inspect its state; do not request another signature.', 'Observe original attempt', 'Observe original state', 'refresh');
     else if (expiredDraft()) choose('Original offer expired', 'The original deadline has not been extended. Inspect the original attempt and its explicit replacement eligibility.', 'Read-only observation', 'Observe original state', 'refresh');
-    else if (order.balances?.payer?.amount === null || order.balances?.payer?.amount < 100) choose('Test tokens required', order.balances.payer.reason || 'The original payer needs 100 configured test-mint tokens. Funding is separate and explicit; Devnet SOL is also needed for reclaim fees.', 'Payer · separate message consent if available', !$('claim-test-tokens').disabled ? 'Request 1,000 test tokens' : 'Inspect funding requirements', !$('claim-test-tokens').disabled ? 'claim-test-tokens' : 'advanced');
-    else choose('Review and authorize', `Original maximum: 100 test tokens. Capture deadline: ${new Date(order.captureDeadline * 1000).toISOString()}. Review the original payer and terms below. Your signature authorizes the retained offer; wait for finalized evidence afterward.`, 'Payer · transaction signature', 'Authorize 100 test tokens', 'authorize');
+    else if (order.balances?.payer?.amount === null || order.balances?.payer?.amount < amount('budget')) choose('Test tokens required', order.balances.payer.reason || `The original payer needs ${amountText('budget')}. Funding is separate and explicit; Devnet SOL is also needed for reclaim fees.`, 'Payer · separate message consent if available', !$('claim-test-tokens').disabled ? claimLabel() : 'Inspect funding requirements', !$('claim-test-tokens').disabled ? 'claim-test-tokens' : 'advanced');
+    else choose('Review and authorize', `Original maximum: ${amountText('budget')}. Capture deadline: ${new Date(order.captureDeadline * 1000).toISOString()}. Review the original payer and terms below. Your signature authorizes the retained offer; wait for finalized evidence afterward.`, 'Payer · transaction signature', `Authorize ${circle()?'up to ':''}${amountText('budget')}`, 'authorize');
   } else if (order?.reclaimFunding?.reason) choose(order.reclaimFunding.balanceLamports !== null && (order.reclaimFunding.balanceLamports === '0' || order.reclaimFunding.requiredLamports !== null) ? 'Devnet SOL required' : 'Reclaim fee check unavailable', order.reclaimFunding.reason, 'Original payer · network fees', 'Observe original state', 'refresh');
   else if (!$('renew-reclaim').hidden) choose('Fresh reclaim preparation eligible', $('reclaim-description').textContent, 'Payer · unsigned preparation only', 'Prepare fresh reclaim explicitly', 'renew-reclaim');
   else if (!$('reclaim').disabled) choose('Request the unused hold', $('reclaim-description').textContent + ' Already-paid tokens stay with the merchant. Application routes must be available.', 'Original payer · transaction signature', 'Reclaim remaining hold', 'reclaim');
@@ -212,6 +228,7 @@ function renderClock() {
   $('clock-label').textContent = stale ? 'Last observed Clock; current state unavailable. Eligibility paused.' : seconds > 0 ? 'Offer deadline; eligibility uses Solana Clock.' : 'Capture window closed. Funded or pending deadlines never reset.';
 }
 async function refresh() {
+  void refreshFaucetAvailability();
   const id = storedId(); if (!id || !config?.configured) return;
   if (!/^[a-f0-9]{32}$/.test(id)) throw new Error('Original order ID invalid. Inspect the original order.');
   const { data } = await request(`/api/orders/${encodeURIComponent(id)}`);
@@ -277,7 +294,7 @@ function rememberWallet(wallet, account) {
 }
 function walletChanged(epoch, wallet, account) {
   if (epoch !== walletEpoch || connection?.wallet !== wallet) return;
-  connection.account = account; rememberWallet(wallet,account); lockMerchant(); render();
+  connection.account = account; rememberWallet(wallet,account); lockMerchant(); render(); void refreshFaucetAvailability();
 }
 async function restoreRememberedWallet() {
   if (!config?.configured || connection || restoringWallet || manualWalletChoice) return;
@@ -290,7 +307,7 @@ async function restoreRememberedWallet() {
     const candidate = await connect(wallet,account => walletChanged(epoch,wallet,account),config,{silent:true,expectedAddress:saved.address});
     const current = walletPreference();
     if (epoch !== walletEpoch || manualWalletChoice || connection || current?.name !== saved.name || current?.address !== saved.address || candidate.account?.address !== saved.address) { candidate.off?.(); return; }
-    connection = candidate; render();
+    connection = candidate; render(); void refreshFaucetAvailability();
   } catch { /* Locked, revoked or unavailable wallet: retain the explicit Connect action. */ }
   finally { restoringWallet = false; }
 }
@@ -304,7 +321,7 @@ function showWallets() {
       try {
         const candidate = await connect(wallet,account => walletChanged(epoch,wallet,account),config);
         if (epoch !== walletEpoch) { candidate.off?.(); return; }
-        connection = candidate; rememberWallet(wallet,candidate.account);
+        connection = candidate; rememberWallet(wallet,candidate.account); void refreshFaucetAvailability();
         $('wallet-dialog').close(); render(); setStatus('Wallet connected. Connection moves no tokens; original payment state retained.');
       } catch (error) { if(epoch === walletEpoch) { setStatus(error.message, true); $('wallet-dialog').close(); render(); } }
     }; $('wallet-list').append(button);
@@ -328,7 +345,7 @@ $('authorize').onclick = () => {
   return run(async () => {
     const draft = order?.status === 'draft' ? order : await prepareOffer();
     const { required, unsigned, id } = draft, offer = required.accepts[0];
-    if (offer.amount !== '100000000' || offer.asset !== config.mint || offer.payTo !== config.merchant || offer.network !== config.network || offer.extra?.programId !== config.programId || offer.extra?.feePayer !== config.sponsor || offer.extra?.paymentFlow !== 'escrow') throw new Error('Offer differs from fixed policy. Nothing was signed.');
+    if (offer.amount !== browserProfile(config).budget || offer.asset !== config.mint || offer.payTo !== config.merchant || offer.network !== config.network || offer.extra?.programId !== config.programId || offer.extra?.feePayer !== config.sponsor || offer.extra?.paymentFlow !== 'escrow') throw new Error('Offer differs from fixed policy. Nothing was signed.');
     if (expiredDraft()) throw new Error('Unsigned offer expired; explicitly replace it before signing.');
     const unsignedSha256 = await signingPreflight(unsigned,'authorize');
     if (signedOffer()) throw new Error('Original wallet consent already attempted; inspect its retained original before new signing.');
@@ -434,6 +451,7 @@ $('restore-order-session').onclick = () => {
 $('refresh').onclick = () => run(async () => {
   const candidate = (await request('/api/config')).data;
   assertDevnetPolicy(candidate);
+  browserProfile(candidate);
   config = candidate; void restoreRememberedWallet();
   // With no retained order, a successful config read clears a startup failure.
   // A retained order still needs its own successful finalized refresh below.
@@ -442,15 +460,16 @@ $('refresh').onclick = () => run(async () => {
 $('new-budget').onclick = () => { if (!$('new-budget').hidden) return run(async () => { await prepareOffer(); setStatus('Fresh unsigned offer prepared by explicit consent. Sign separately; old journals remain intact.'); }); };
 function showFaucetResult(data) {
   const retained=JSON.parse(faucetOriginal()||'null');
-  if(!retained || data.id!==retained.id || data.recipient!==retained.recipient || data.amount!==1000 || data.mint!==config.mint)throw new Error('Original test-token response differs. New operations remain stopped.');
+  if(!retained || data.id!==retained.id || data.recipient!==retained.recipient || data.amount!==amount('faucetAmount') || data.mint!==config.mint)throw new Error('Original test-token response differs. New operations remain stopped.');
   const receipt=$('faucet-receipt');receipt.hidden=!data.signature;
   if(data.signature) {
     if(!/^[1-9A-HJ-NP-Za-km-z]{64,88}$/.test(data.signature))throw new Error('Invalid original token receipt.');
+    receipt.textContent=`Original token receipt: ${data.signature} ↗`;
     receipt.href=explorer('tx',data.signature);
   }
   const final=data.status==='finalized'||data.status==='failed';
   if(final && (!data.signature || !/^[0-9]+$/.test(data.finalizedSlot??'')))throw new Error('Finalized token receipt missing.');
-  $('faucet-status').textContent=data.status==='finalized'?'1,000 test tokens delivered · finalized. Next claim in 24 hours.':data.status==='failed'?'Original token transaction finalized with an error. No retry.':data.status==='refused'?'Token request refused before sponsor signing. No tokens sent; this request is retained.':'Original token request pending or UNKNOWN. New economics stopped; check this original request only.';
+  $('faucet-status').textContent=data.status==='finalized'?`${amountText('faucetAmount')} delivered · finalized. Next claim in 24 hours.`:data.status==='failed'?'Original token transaction finalized with an error. No retry.':data.status==='refused'?'Token request refused before sponsor signing. No tokens sent; this request is retained.':'Original token request pending or UNKNOWN. New economics stopped; check this original request only.';
   if(final || data.status==='refused') {
     localStorage.setItem(`capture402-faucet-result-${retained.id}`,JSON.stringify(data));
     localStorage.removeItem('capture402-faucet-original');
@@ -466,15 +485,23 @@ $('refresh-test-tokens').onclick=()=>{if(!busy && faucetStopped())return run(che
 $('claim-test-tokens').onclick=()=>{
   if($('claim-test-tokens').disabled)return;
   return run(async()=>{
-    $('faucet-receipt').hidden=true;$('faucet-status').textContent='Sign the 1,000-test-token request message in your wallet. No payment.';
+    $('faucet-receipt').hidden=true;$('faucet-status').textContent=`Sign the ${amountText('faucetAmount')} request message in your wallet. No payment.`;
     const recipient=connection.account.address;
     const {data:challenge}=await request('/api/faucet/challenge',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({recipient})});
     const signature=await walletSignFaucetRequest(connection,challenge,config);
     localStorage.setItem('capture402-faucet-original',JSON.stringify({id:challenge.id,recipient}));render();
     const {data}=await request('/api/faucet/claim',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:challenge.token,signature})});
-    showFaucetResult(data);
+    showFaucetResult(data);await refreshFaucetAvailability();
   });
 };
+async function refreshFaucetAvailability() {
+  if(!config?.faucetEnabled || !circle())return;
+  const recipient=connection?.account?.address;
+  try {faucetAvailability=(await request(`/api/faucet/status${recipient?`?recipient=${encodeURIComponent(recipient)}`:''}`)).data;}
+  catch {faucetAvailability={available:false,reason:'Devnet RPC unavailable; treasury status could not be verified.'};}
+  render();
+}
+setInterval(()=>{if(!busy)void refreshFaucetAvailability();},30000);
 setInterval(() => { if (!busy && clockStage() !== renderedClockStage) render(); else renderClock(); }, 1000);
 setInterval(() => { if (!busy && !reading && order && config?.configured) { reading = true; refresh().catch(error => { stale = true; accessId = ''; render(); setStatus(error.message + ' Original actions paused.', true); }).finally(() => { reading = false; render(); }); } }, 15000);
-try { config = (await request('/api/config')).data; assertDevnetPolicy(config); render(); void restoreRememberedWallet(); if (diagnosticOnly) setStatus('Signing-only diagnostic: no signed transaction is sent to the backend.'); await refresh(); if(config.faucetEnabled && faucetStopped())await checkFaucetOriginal(); } catch (error) { stale = true; render(); setStatus(error.message, true); }
+try { config = (await request('/api/config')).data; assertDevnetPolicy(config); browserProfile(config); render(); void restoreRememberedWallet(); if (diagnosticOnly) setStatus('Signing-only diagnostic: no signed transaction is sent to the backend.'); await refresh(); await refreshFaucetAvailability(); if(config.faucetEnabled && faucetStopped())await checkFaucetOriginal(); } catch (error) { stale = true; render(); setStatus(error.message, true); }

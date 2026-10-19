@@ -1,3 +1,5 @@
+import { CIRCLE_PROFILE, CIRCLE_MINT, DEVNET_PROGRAM, DEVNET_NETWORK, profileHash } from '../src/payment-profile.ts';
+import { circleApprovalFixture } from './fixtures/operational-fixture.ts';
 import { operationalFixture } from './fixtures/operational-fixture.ts';
 // Local HTTP → real facilitator → accepted SBF. No Devnet submissions or mocked payment engine.
 import { mkdtempSync, readdirSync, readFileSync, writeFileSync,renameSync,existsSync,chmodSync,statSync,unlinkSync,chownSync } from "node:fs";
@@ -23,9 +25,10 @@ import { createHarness, type Harness, NOW, inspect } from "./fixture.js";
 import type { Hono } from "hono";
 let h: Harness, c: RestaurantConfig, app: Hono, dir: string;
 const merchantToken = "local-merchant-test-credential-0123456789";
-const origin = "http://restaurant.test";
+let origin = "http://restaurant.test";
 type Session = { id: string; cookie: string; required: PaymentRequired; unsigned: string };
 beforeEach(async () => {
+  origin="http://restaurant.test";operationalFixture.circleUsdcDemoProfile=undefined;
   h = await createHarness(demoSponsorComputeBounds());
   h.ok(await h.direct([getMintToInstruction({ mint: h.mint, token: await h.payerAta(), mintAuthority: h.setup, amount: 1_000_000_000n })]));
   dir = mkdtempSync(join(tmpdir(), "capture402-restaurant-"));
@@ -45,7 +48,7 @@ async function offer(scenario = "normal"): Promise<Session> {
   const r = await app.request(`${origin}/api/orders`, { method: "POST", headers: { origin, "content-type": "application/json" }, body: JSON.stringify({ payer: h.payer.address, scenario }) });
   expect(r.status).toBe(402);
   const required = decodeHeader(r.headers.get("PAYMENT-REQUIRED")!) as PaymentRequired;
-  expect(required.accepts[0]!.amount).toBe("100000000");
+  expect(required.accepts[0]!.amount).toBe(c.amount.toString());
   const b = await r.json() as any;
   return { id: b.order, unsigned: b.unsigned, required, cookie: r.headers.get("set-cookie")!.split(";")[0]! };
 }
@@ -1446,4 +1449,68 @@ vi.mock('../src/operational-data.ts',async(importOriginal)=>{
  return {...actual,loadOperationalData:()=>operationalFixture,
  operationalValue:(key:string)=>{const value=(operationalFixture as Record<string,unknown>)[key];if(value===undefined)throw Error('synthetic field unavailable');return value;},
  operationalRevision:(key:string)=>{const value=(operationalFixture as Record<string,unknown>)[key];if(typeof value!=='string'||!/^[a-f0-9]{40}$/.test(value))throw Error('synthetic revision unavailable');return value;}};
+});
+
+describe('approved Circle USDC small-value profile with the real local SBF',()=>{
+  beforeEach(async()=>{
+    await h.close();
+    h=await createHarness(demoSponsorComputeBounds(),{mint:CIRCLE_MINT,programId:DEVNET_PROGRAM,network:DEVNET_NETWORK});
+    h.ok(await h.direct([getMintToInstruction({mint:h.mint,token:await h.payerAta(),mintAuthority:h.setup,amount:490000n})]));
+    const {getSignatureStatus,getAccountAtLeast,offerBlockhashValid}=c.ledger;
+    origin='https://circle.example.invalid';
+    operationalFixture.circleUsdcDemoProfile=circleApprovalFixture(h.facilitatorKey.address,h.server.address,origin);
+    c={...c,facilitatorUrl:h.url,origin,network:DEVNET_NETWORK,programId:DEVNET_PROGRAM,feePayer:h.facilitatorKey.address,server:h.server,asset:CIRCLE_MINT,
+      amount:100000n,paymentProfile:CIRCLE_PROFILE,ledger:Object.assign(h.ledger,{getSignatureStatus,getAccountAtLeast,offerBlockhashValid}),
+      verifyEconomicIdentity:vi.fn(async()=>{})};
+    app=createRestaurantApp(c);
+  });
+  test('0.10 authorization, 0.04 + 0.025 capture, 0.035 release and 0.01 merchant-funded refund',async()=>{
+    const s=await offer();expect(s.required.accepts[0]).toMatchObject({asset:CIRCLE_MINT,amount:'100000',extra:{programId:DEVNET_PROGRAM}});
+    expect((await authorize(s)).status).toBe(200);
+    for(const a of ['beer','salmon','finish','refund'])expect((await action(s,a)).status).toBe(200);
+    expect(await view(s)).toMatchObject({authorized:0.1,captured:0.065,remaining:0,released:0.035,refunded:0.01,refundableBaseUnits:'55000'});
+    const p=h.state(c.orders.read(s.id).payment);
+    expect(p.mint).toBe(CIRCLE_MINT);expect(p.maximum).toBe(100000n);expect(p.held).toBe(0n);
+    const stored=c.orders.read(s.id);expect(stored.events.map(e=>e.amount)).toEqual(['100000','40000','25000','35000','10000']);
+  });
+  test.each(['cancelled','atomic','refund','partial-reclaim','unavailable'])('alternative %s preserves escrow and refundable invariants',async scenario=>{
+    const s=await offer(scenario);expect((await authorize(s)).status).toBe(200);
+    if(scenario==='cancelled')expect((await action(s,'void')).status).toBe(200);
+    if(scenario==='atomic')expect((await action(s,'atomic')).status).toBe(200);
+    if(scenario==='refund'){for(const a of ['beer','refund','finish'])expect((await action(s,a)).status).toBe(200);}
+    if(scenario==='partial-reclaim'||scenario==='unavailable') {
+      if(scenario==='partial-reclaim')expect((await action(s,'beer')).status).toBe(200);
+      h.setTime(BigInt((await view(s)).captureDeadline));
+      const draft=await (await app.request(`${origin}/api/orders/${s.id}/reclaim`,{headers:{cookie:s.cookie}})).json() as any;
+      const r=await app.request(`${origin}/api/orders/${s.id}/reclaim`,{method:'POST',headers:{origin,cookie:s.cookie,'Content-Type':'application/json'},body:JSON.stringify({transaction:await sign(draft.unsigned)})});
+      expect(r.status).toBe(200);
+    }
+    const p=h.state(c.orders.read(s.id).payment);expect(p.held).toBe(0n);
+    expect(p.refundable).toBe(scenario==='atomic'||scenario==='partial-reclaim'?40000n:0n);
+  });
+  test('unapproved identity, changed budget, substitute mint and widened capture profile refuse',()=>{
+    for(const change of [{amount:100000000n},{asset:h.outsider.address},{programId:h.outsider.address},{paymentProfile:{...CIRCLE_PROFILE,firstCapture:'40001'}}])expect(()=>createRestaurantApp({...c,...change} as RestaurantConfig)).toThrow();
+  });
+  test('RPC identity failure stops new signing, while original read-only records remain accessible',async()=>{
+    const s=await offer();vi.mocked(c.verifyEconomicIdentity!).mockRejectedValue(Error('private-rpc-secret'));
+    const r=await authorize(s);expect(r.status).toBe(503);expect(await r.text()).not.toContain('private-rpc-secret');
+    expect((await view(s)).status).toBe('draft');expect(h.ledger.submissions).toHaveLength(0);expect(c.orders.busy(s.id)).toBe(false);
+  });
+  test('lost Circle capture response survives restart without retry or changed original receipt',async()=>{
+    const s=await offer();await authorize(s);h.ledger.failSubmit='after-landing';
+    expect((await action(s,'beer')).status).toBe(409);
+    const bytes=readFileSync(c.orders.path(s.id),'utf8'),count=h.ledger.submissions.length;
+    app=createRestaurantApp({...c,orders:new RestaurantOrders(c.orders.dir)});
+    expect((await action(s,'beer')).status).toBe(409);expect(readFileSync(c.orders.path(s.id),'utf8')).toBe(bytes);expect(h.ledger.submissions).toHaveLength(count);
+  });
+  test('Circle merchant consent binds the profile hash and exact 0.10 USDC budget',async()=>{
+    c.publicMerchantDemo=true;app=createRestaurantApp(c);const s=await offer();await authorize(s);
+    const challenge=await (await app.request(`${origin}/api/orders/${s.id}/merchant-demo`,{method:'POST',headers:{origin,cookie:s.cookie}})).json() as any;
+    expect(challenge).toMatchObject({mint:CIRCLE_MINT,budget:'100000',profileHash:profileHash(operationalFixture.circleUsdcDemoProfile)});
+    expect(challenge.message).toContain('Budget: 0.10 USDC');
+    const signature=Buffer.from(await signBytes(h.payer.keyPair.privateKey,new TextEncoder().encode(challenge.message))).toString('base64');
+    const authorization=`Demo ${Buffer.from(JSON.stringify({token:challenge.token,signature})).toString('base64url')}`;
+    const r=await app.request(`${origin}/api/orders/${s.id}/actions/beer`,{method:'POST',headers:{origin,cookie:s.cookie,authorization}});
+    expect(r.status).toBe(200);expect((await view(s)).captured).toBe(0.04);
+  });
 });

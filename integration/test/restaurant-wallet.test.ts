@@ -1,3 +1,4 @@
+import { CIRCLE_PROFILE, LEGACY_PROFILE, CIRCLE_MINT, DEVNET_PROGRAM, DEVNET_NETWORK } from '../src/payment-profile.ts';
 // Browser signing adapter tests: real local transaction bytes/signatures, no payment relay.
 import { getBase64Encoder, getTransactionDecoder, partiallySignTransaction } from "@solana/kit";
 import { afterAll, beforeAll, describe, expect, test } from "vitest";
@@ -143,4 +144,31 @@ describe('merchant demo readable wallet consent',()=>{
     await expect(adapter.walletSignMerchantDemo(connection,q,order,policy)).rejects.toThrow(/changed/);
     expect(h.ledger.submissions).toHaveLength(0);
   });
+});
+
+test('browser and server profiles agree exactly, including all six-decimal atomic amounts',async()=>{
+  const path='../web/payment-profile.js';const {browserProfile,profileLabel}=await import(path);
+  expect(browserProfile({paymentProfile:LEGACY_PROFILE})).toEqual(LEGACY_PROFILE);
+  const policy={...adapter.DEVNET_POLICY,paymentProfile:CIRCLE_PROFILE,mint:CIRCLE_MINT,programId:DEVNET_PROGRAM,profileHash:'a'.repeat(64)};
+  expect(browserProfile(policy)).toEqual(CIRCLE_PROFILE);
+  expect(['budget','firstCapture','secondCapture','releaseRemainder','refundExample','faucetAmount'].map(k=>profileLabel(policy,k)))
+    .toEqual(['0.10 USDC','0.04 USDC','0.025 USDC','0.035 USDC','0.01 USDC','0.50 USDC']);
+  for(const changed of [{mint:h.mint},{programId:h.facilitator.programId},{profileHash:undefined},{paymentProfile:{...CIRCLE_PROFILE,budget:'100000000'}}])expect(()=>browserProfile({...policy,...changed})).toThrow();
+});
+test('Circle wallet messages require official mint, exact 0.50 claim, 0.10 budget and original approval hash',async()=>{
+  Object.assign(window,{location:{origin:'https://demo.test'}});
+  const {signBytes}=await import('@solana/kit'),{MerchantDemoConsent}=await import('../src/merchant-demo.ts');
+  const policy={...adapter.DEVNET_POLICY,network:DEVNET_NETWORK,programId:DEVNET_PROGRAM,mint:CIRCLE_MINT,paymentProfile:CIRCLE_PROFILE,profileHash:'a'.repeat(64),sponsor:h.facilitatorKey.address,merchant:h.server.address};
+  const now=Math.floor(Date.now()/1000),order={id:'a'.repeat(32),payer:h.payer.address,payment:h.outsider.address,scenario:'normal',captureDeadline:now+150,refundDeadline:now+180,now};
+  let signs=0;
+  const connection={account:account(),signMessage:async({message}:any)=>{signs++;return [{signedMessage:new Uint8Array(message),signature:new Uint8Array(await signBytes(h.payer.keyPair.privateKey,message))}];}};
+  const q=new MerchantDemoConsent('synthetic-circle-merchant-key-0123456789').challenge({schema:1,origin:window.location.origin,network:policy.network,programId:policy.programId,sponsor:policy.sponsor,merchant:policy.merchant,mint:policy.mint,budget:'100000',profileHash:policy.profileHash,
+    order:order.id,payment:order.payment,payer:order.payer,scenario:order.scenario,captureDeadline:order.captureDeadline,refundDeadline:order.refundDeadline,capabilityHash:'b'.repeat(64)},BigInt(now));
+  expect(Buffer.from(await adapter.walletSignMerchantDemo(connection,q,order,policy),'base64')).toHaveLength(64);
+  for(const change of [{budget:'100000000'},{profileHash:'b'.repeat(64)},{mint:h.mint},{message:q.message.replace('0.10','100')}])await expect(adapter.walletSignMerchantDemo(connection,{...q,...change},order,policy)).rejects.toThrow();
+  const claim={recipient:h.payer.address,amount:0.5,mint:CIRCLE_MINT,id:'c'.repeat(64),expiresAt:now+600,
+    message:`Capture402 Devnet test-token request\nOrigin: https://demo.test\nRecipient: ${h.payer.address}\nMint: ${CIRCLE_MINT}\nAmount: 0.50 Devnet USDC\nNetwork: Solana Devnet\nRequest: ${'c'.repeat(64)}\nExpires: ${now+600}\nNo funds or transaction authority are granted by this message.`};
+  expect(Buffer.from(await adapter.walletSignFaucetRequest(connection,claim,policy),'base64')).toHaveLength(64);
+  for(const change of [{amount:1000},{mint:h.mint},{message:claim.message+'changed'}])await expect(adapter.walletSignFaucetRequest(connection,{...claim,...change},policy)).rejects.toThrow();
+  expect(signs).toBe(2);expect(h.ledger.submissions).toHaveLength(0);
 });

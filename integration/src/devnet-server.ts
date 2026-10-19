@@ -1,3 +1,5 @@
+import { selectedPaymentProfile, CIRCLE_PROFILE, circleApproval, requireCircleRpc, requireProfileForTreasury } from './payment-profile.ts';
+import { circleCustodyGuard } from './circle-custody.ts';
 import { operationalValue } from './operational-data.ts';
 import { CampaignBudget, type CampaignPolicy } from './campaign-budget.ts';
 import { campaignSponsorship } from './campaign-sponsorship.ts';
@@ -21,7 +23,7 @@ import { SponsorshipGuard } from "./sponsorship.ts";
 import { FileSubmissionJournal } from "./submission-journal.ts";
 import { AdmissionJournal, loadAdmissionContract } from './admission-journal.ts';
 import { requireE2eRuntimeRpc, trustedRuntimeFile } from './e2e-runtime-policy.ts';
-import { DevnetFaucetStore, type FaucetPolicy } from './devnet-faucet-store.ts';
+import { DevnetFaucetStore, validateProfileFaucet, type FaucetPolicy } from './devnet-faucet-store.ts';
 import { DevnetFaucet } from './devnet-faucet.ts';
 import { ata } from './program.ts';
 
@@ -39,11 +41,18 @@ async function loadFeePayer(path: string): Promise<KeyPairSigner> {
   return createKeyPairSignerFromBytes(new Uint8Array(parsed as number[]));
 }
 
-async function main(): Promise<void> {
+export async function startFacilitator(): Promise<void> {
+  const profile=selectedPaymentProfile();
+  const circle=profile.id===CIRCLE_PROFILE.id?circleApproval():undefined;
   const record = loadDeploymentRecord(requireEnv("SAC006_DEPLOYMENT_RECORD_PATH"));
   const rpcUrl = requireEnv("SOLANA_RPC_URL");
+  if(circle) {requireCircleRpc(rpcUrl);requireE2eRuntimeRpc(rpcUrl,record);if(record.programId!==circle.programId || record.network.genesisHash!==circle.genesisHash || record.network.caip2!==circle.network)throw Error("Circle deployment mismatch");}
   const feePayer = await loadFeePayer(requireEnv("SAC006_FACILITATOR_KEYPAIR_PATH"));
-  const e2e = feePayer.address === operationalValue<string>('sponsorAddress') || requireEnv('SAC006_FACILITATOR_KEYPAIR_PATH').includes('/capture402-e2e/');
+  requireProfileForTreasury(profile,feePayer.address);
+  if(circle && (feePayer.address!==circle.sponsor || requireEnv("SAC006_ALLOWLIST_MINT")!==circle.mint || requireEnv("SAC006_ALLOWLIST_MERCHANT")!==circle.merchant))throw Error("Circle facilitator identities mismatch");
+  const guardCustody=circle?circleCustodyGuard({submissions:requireEnv('SAC006_FACILITATOR_JOURNAL_DIR'),relayAdmission:requireEnv('SAC006_E2E_RELAY_ADMISSION_DIR'),
+    campaignBudget:'/var/lib/capture402-e2e/circle-usdc-v1/facilitator/campaign-budget',faucet:'/var/lib/capture402-e2e/circle-usdc-v1/facilitator/faucet'}):()=>{};
+  const e2e = !!circle || feePayer.address === operationalValue<string>('sponsorAddress') || requireEnv('SAC006_FACILITATOR_KEYPAIR_PATH').includes('/capture402-e2e/');
   if (e2e) requireE2eRuntimeRpc(rpcUrl,record);
 
   const ledger = new RpcLedger({ deployment: record, network: record.network.caip2, genesisHash: record.network.genesisHash, rpcUrl, rpcMinIntervalMs:e2e?250:0 });
@@ -54,13 +63,13 @@ async function main(): Promise<void> {
   // Binding to the E2E sponsor prevents a missing/renamed environment profile bypass.
   let sponsorBudget, admission, campaignBudget:CampaignBudget|undefined;
   if (e2e) {
-    const directory = '/var/lib/capture402-e2e/facilitator/campaign-budget';
+    const directory = circle?'/var/lib/capture402-e2e/circle-usdc-v1/facilitator/campaign-budget':'/var/lib/capture402-e2e/facilitator/campaign-budget';
     const policy = JSON.parse(readFileSync(`${directory}/policy.json`,'utf8')) as CampaignPolicy;
-    if (policy.sponsor !== feePayer.address || policy.browser !== operationalValue<string>('browserAddress') || policy.genesisHash !== record.network.genesisHash) throw Error('E2E campaign policy/runtime mismatch');
+    if (policy.spendLimit !== (circle?.sponsorSpendLimit ?? "1000000000") || policy.sponsor !== feePayer.address || policy.browser !== operationalValue<string>('browserAddress') || policy.genesisHash !== record.network.genesisHash) throw Error('E2E campaign policy/runtime mismatch');
     requireE2eRuntimeRpc(rpcUrl,record);
     campaignBudget=new CampaignBudget(directory,policy);
     sponsorBudget = campaignSponsorship(campaignBudget,rpcBackend(record,rpcUrl));
-    admission = new AdmissionJournal(requireEnv('SAC006_E2E_RELAY_ADMISSION_DIR'),'relay-attempts',Number(requireEnv('SAC006_SPONSOR_MAX_ATTEMPTS')),loadAdmissionContract('relay-attempts'));
+    admission = new AdmissionJournal(requireEnv('SAC006_E2E_RELAY_ADMISSION_DIR'),'relay-attempts',Number(requireEnv('SAC006_SPONSOR_MAX_ATTEMPTS')),loadAdmissionContract('relay-attempts',circle?'circle-usdc-v1':undefined));
   }
   const facilitator = new Facilitator({ network: record.network.caip2, programId: record.programId, feePayer, ledger, journal, sponsorBudget, observationKey: requireEnv("SAC006_BEARER_TOKEN"), ...demoSponsorComputeBounds() });
   const sponsorship = new SponsorshipGuard({
@@ -71,21 +80,24 @@ async function main(): Promise<void> {
     admission,
   });
   let faucet:DevnetFaucet|undefined;
-  const faucetDirectory='/var/lib/capture402-e2e/facilitator/faucet';
+  const faucetDirectory=circle?'/var/lib/capture402-e2e/circle-usdc-v1/facilitator/faucet':'/var/lib/capture402-e2e/facilitator/faucet';
   const faucetPolicyPath=process.env.SAC006_E2E_FAUCET_POLICY_PATH;
+  if(circle && !faucetPolicyPath)throw Error("Circle faucet approval required");
   if(e2e && existsSync(faucetDirectory) && !faucetPolicyPath)throw Error('existing faucet custody requires its compatible configured reader');
   if(faucetPolicyPath) {
     if(!e2e || !campaignBudget || !admission || requireEnv('SAC006_SPONSOR_MAX_ATTEMPTS')!=='600')throw Error('faucet is restricted to the reviewed E2E campaign');
     const policy=JSON.parse(trustedRuntimeFile(faucetPolicyPath)) as FaucetPolicy;
-    if(policy.sponsor!==feePayer.address || policy.mint!==operationalValue<string>('mintAddress') ||
-      policy.mint!==requireEnv('SAC006_ALLOWLIST_MINT') || policy.pool!==await ata(feePayer.address,policy.mint) || policy.origin!==operationalValue<string>('e2eOrigin'))throw Error('faucet policy exceeds existing E2E identities');
+    validateProfileFaucet(profile,policy);
+    if(policy.sponsor!==feePayer.address || policy.mint!==(circle?.mint ?? operationalValue<string>('mintAddress')) ||
+      policy.mint!==requireEnv('SAC006_ALLOWLIST_MINT') || policy.pool!==await ata(feePayer.address,policy.mint) || policy.origin!==(circle?.origin ?? operationalValue<string>('e2eOrigin')))throw Error('faucet policy exceeds existing E2E identities');
     const store=new DevnetFaucetStore(faucetDirectory,policy);
     faucet=new DevnetFaucet({store,sponsor:feePayer,ledger,backend:rpcBackend(record,rpcUrl),budget:campaignBudget,admission:sponsorship,
-      latest:()=>ledger.latestBlockhash(),challengeKey:requireEnv('SAC006_BEARER_TOKEN'),bearerToken:requireEnv('SAC006_BEARER_TOKEN')});
+      latest:()=>ledger.latestBlockhash(),...(circle?{verifyGenesis:()=>ledger.verifyGenesis()}:{}),challengeKey:requireEnv('SAC006_BEARER_TOKEN'),bearerToken:requireEnv('SAC006_BEARER_TOKEN')});
   }
   const app = createGatewayApp(facilitator, {
     bearerToken: requireEnv("SAC006_BEARER_TOKEN"),
     sponsorship,
+    ...(circle?{verifyEconomicIdentity:()=>ledger.verifyGenesis(),paymentTerms:{budget:circle.budget,network:circle.network,programId:circle.programId}}:{}),
     ...(faucet?{faucet}:{}),
     allowlist: {
       merchant: requireEnv("SAC006_ALLOWLIST_MERCHANT") as Address,
@@ -95,14 +107,18 @@ async function main(): Promise<void> {
 
   const port = Number(process.env.SAC006_PORT ?? "8787");
   const hostname = process.env.SAC006_HOST ?? "127.0.0.1";
-  serve({ fetch: app.fetch, port, hostname }, (info) => {
+  guardCustody();
+  serve({ fetch: (request,env) => {
+    try {guardCustody();} catch {return new Response('Circle custody unavailable',{status:503});}
+    return app.fetch(request,env);
+  }, port, hostname }, (info) => {
     console.log(`SAC-006 facilitator listening on http://${hostname}:${info.port}`);
     console.log(`network=${facilitator.network} program=${record.programId} rpc=${e2e ? 'verified-owner-selected-private-provider' : redactRpcUrl(rpcUrl)}`);
     console.log(`deployment record sha256=${record.sha256} (trusted installation policy)`);
   });
 }
 
-main().catch(() => {
+if(process.argv[1]?.endsWith('devnet-server.ts'))startFacilitator().catch(() => {
   console.error('Facilitator startup stopped; verify private configuration and accepted Devnet identity.');
   process.exitCode = 1;
 });

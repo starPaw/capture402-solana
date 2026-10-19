@@ -1,3 +1,4 @@
+import { browserProfile, profileAmount } from './payment-profile.js';
 // Wallet Standard event discovery and raw-byte transaction signing.
 // API references: wallet-standard/core/app and anza-xyz/wallet-standard signTransaction.
 // No wallet is created, no keys are read, and no signAndSend call is made by this adapter.
@@ -147,10 +148,10 @@ export async function walletSign(connection, unsigned, policy = DEVNET_POLICY) {
 export async function walletSignFaucetRequest(connection, challenge, policy = DEVNET_POLICY) {
   assertDevnetPolicy(policy);
   const recipient=connection?.account?.address;
-  if(!recipient || challenge?.recipient!==recipient || challenge.amount!==1000 || challenge.mint!==policy.mint ||
+  if(!recipient || challenge?.recipient!==recipient || challenge.amount!==profileAmount(policy,'faucetAmount') || challenge.mint!==policy.mint ||
     !/^[a-f0-9]{64}$/.test(challenge.id??'') || !Number.isSafeInteger(challenge.expiresAt) ||
     challenge.expiresAt<=Math.floor(Date.now()/1000) || challenge.expiresAt>Math.floor(Date.now()/1000)+630)throw new Error('Test-token request differs from fixed policy.');
-  const expected=`Capture402 Devnet test-token request\nOrigin: ${window.location.origin}\nRecipient: ${recipient}\nMint: ${policy.mint}\nAmount: 1000 test tokens\nNetwork: Solana Devnet\nRequest: ${challenge.id}\nExpires: ${challenge.expiresAt}\nNo funds or transaction authority are granted by this message.`;
+  const expected=`Capture402 Devnet test-token request\nOrigin: ${window.location.origin}\nRecipient: ${recipient}\nMint: ${policy.mint}\nAmount: ${browserProfile(policy).id==='circle-usdc-v1'?'0.50 Devnet USDC':'1000 test tokens'}\nNetwork: Solana Devnet\nRequest: ${challenge.id}\nExpires: ${challenge.expiresAt}\nNo funds or transaction authority are granted by this message.`;
   if(challenge.message!==expected)throw new Error('Unexpected wallet message. Nothing signed.');
   const sign=connection.signMessage??connection.wallet.features['solana:signMessage']?.signMessage;
   if(!sign)throw new Error('This wallet cannot sign the test-token request message.');
@@ -167,9 +168,9 @@ export async function walletSignMerchantDemo(connection, challenge, order, polic
   if(!payer || order?.payer!==payer || challenge?.payer!==payer || challenge.order!==order.id || challenge.payment!==order.payment ||
     challenge.scenario!==order.scenario || challenge.origin!==window.location.origin || challenge.network!==policy.network ||
     challenge.mint!==policy.mint || challenge.merchant!==policy.merchant || challenge.sponsor!==policy.sponsor || challenge.programId!==policy.programId ||
-    challenge.budget!=='100000000' || challenge.captureDeadline!==order.captureDeadline || challenge.refundDeadline!==order.refundDeadline ||
+    challenge.budget!==browserProfile(policy).budget || challenge.profileHash!==(browserProfile(policy).id==='circle-usdc-v1'?policy.profileHash:undefined) || challenge.captureDeadline!==order.captureDeadline || challenge.refundDeadline!==order.refundDeadline ||
     challenge.expiresAt!==order.refundDeadline || challenge.expiresAt<=order.now || !/^[a-f0-9]{64}$/.test(challenge.nonce??''))throw new Error('Merchant demo request differs from this original test order.');
-  const expected=`Capture402 Devnet merchant demo controls\nOrigin: ${window.location.origin}\nPayer: ${payer}\nOrder: ${order.id}\nPayment: ${order.payment}\nScenario: ${order.scenario}\nMerchant: ${policy.merchant}\nSponsor: ${policy.sponsor}\nMint: ${policy.mint}\nProgram: ${policy.programId}\nBudget: 100 test tokens\nCapture deadline: ${order.captureDeadline}\nRefund deadline: ${order.refundDeadline}\nRequest: ${challenge.nonce}\nExpires: ${order.refundDeadline}\nI allow fixed capture, release and merchant-funded refund actions for this test order only. No other order or wallet transaction authority is granted.`;
+  const expected=`Capture402 Devnet merchant demo controls\nOrigin: ${window.location.origin}\nPayer: ${payer}\nOrder: ${order.id}\nPayment: ${order.payment}\nScenario: ${order.scenario}\nMerchant: ${policy.merchant}\nSponsor: ${policy.sponsor}\nMint: ${policy.mint}\nProgram: ${policy.programId}\nBudget: ${browserProfile(policy).id==='circle-usdc-v1'?'0.10 USDC':'100 test tokens'}${challenge.profileHash?`\nProfile: ${challenge.profileHash}`:''}\nCapture deadline: ${order.captureDeadline}\nRefund deadline: ${order.refundDeadline}\nRequest: ${challenge.nonce}\nExpires: ${order.refundDeadline}\nI allow fixed capture, release and merchant-funded refund actions for this test order only. No other order or wallet transaction authority is granted.`;
   if(challenge.message!==expected)throw new Error('Unexpected merchant demo consent. Nothing signed.');
   const sign=connection.signMessage??connection.wallet.features['solana:signMessage']?.signMessage;
   if(!sign)throw new Error('This wallet cannot sign the order-specific demo consent.');

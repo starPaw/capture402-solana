@@ -186,7 +186,7 @@ http {
       expect(demo.status).toBe(200);
       expect(demo.body).toContain("<title>Capture402 payment lab · Live Devnet</title>");
       expect(demo.body).toContain("<h1>Try a fixed budget.</h1>");
-      expect(demo.body).toContain('id="terms-heading">100 test-token maximum</h2>');
+      expect(demo.body).toContain('id="terms-heading">Configured payment maximum</h2>');
       expect(demo.body).toContain('href="/assets/style.css"');
       expect(demo.body).toContain('src="/assets/app.js"');
       expect(demo.body).not.toContain('href="/assets/homepage.css"');
@@ -196,9 +196,10 @@ http {
       expect(root.headers["x-robots-tag"]).toBe("noindex, nofollow");
       expect(root.headers["cache-control"]).toBe("no-store");
     }
-    for (const [name, mime] of [["homepage.css", "text/css"], ["homepage.js", "text/javascript"], ['receipt-state.js','text/javascript']]) {
+    for (const [name, mime] of [["homepage.css", "text/css"], ["homepage.js", "text/javascript"], ['receipt-state.js','text/javascript'], ['payment-profile.js','text/javascript']]) {
       const asset = await https(`/assets/${name}`); expect(asset.status).toBe(200);
       expect(asset.headers["content-type"]).toBe(`${mime}; charset=utf-8`);
+      expect(asset.body).toBe(readFileSync(new URL(`../web/${name}`, import.meta.url), 'utf8'));
       const before = upstream.length;
       for (const method of ["HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]) expect((await https(`/assets/${name}`, method)).status).toBe(405);
       for (const path of [`/assets/${name}/`, `/assets/${name}.extra`]) expect((await https(path)).status).toBe(404);

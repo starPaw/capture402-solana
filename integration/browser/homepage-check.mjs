@@ -216,7 +216,7 @@ try {
     await demo.goto(new URL(route, url).href);
     assert.match(await demo.title(), /^Capture402 payment lab · Live Devnet$/);
     assert.match(await demo.locator('header').innerText(), /Capture402\s+Payment lab/);
-    assert.equal(await demo.locator('#terms-heading').innerText(), '100 test-token maximum');
+    assert.equal(await demo.locator('#terms-heading').innerText(), 'Configured payment maximum');
     assert.equal(await demo.locator('#next-step').innerText(), 'Check readiness');
     assert.match(await demo.locator('noscript').innerText(), /JavaScript is required to inspect original orders and use the wallet\. No payment actions are available here without it\./);
     assert.equal(await demo.locator('#next-action').isDisabled(), true);
