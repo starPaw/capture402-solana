@@ -1,14 +1,17 @@
 // Real browser rendering against synthetic HTTPS API responses only. No RPC,
 // usable signatures, wallet approval, treasury funding or economic submission.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createServer } from 'node:https';
 import { once } from 'node:events';
+import { createServer as createPortReservation } from 'node:net';
+import { setTimeout as delay } from 'node:timers/promises';
 import { serve } from '@hono/node-server';
+import { Hono } from 'hono';
 import { createPresentationApp } from '../src/restaurant-server.ts';
 import { CIRCLE_PROFILE, CIRCLE_MINT, DEVNET_PROGRAM, DEVNET_NETWORK } from '../src/payment-profile.ts';
 const { chromium }=await import(pathToFileURL(process.env.RESTAURANT_PLAYWRIGHT_MODULE));
@@ -18,23 +21,65 @@ execFileSync('openssl',['req','-x509','-newkey','rsa:2048','-nodes','-days','1',
 const identity='11111111111111111111111111111111';
 const info={programId:DEVNET_PROGRAM,network:DEVNET_NETWORK,configured:true,merchant:identity,sponsor:identity,mint:CIRCLE_MINT,
   faucetEnabled:true,paymentProfile:CIRCLE_PROFILE,profileHash:'a'.repeat(64)};
-const app=createPresentationApp(info);
-const server=serve({fetch:app.fetch,hostname:'127.0.0.1',port:0,createServer,serverOptions:{key:readFileSync(join(temp,'key.pem')),cert:readFileSync(join(temp,'cert.pem'))}});
+let browser,nginx,state,availability={available:true,reason:''},posts=0;
+const fixture=new Hono();
+fixture.get('/api/faucet/status',c=>c.json(availability));
+fixture.get('/api/orders/:id',c=>state?c.json(state):c.json({error:'synthetic order unavailable'},404));
+const app=createPresentationApp(info,fixture);
+const nginxBin=process.env.SAC006_TEST_NGINX;
+const server=serve({fetch:app.fetch,hostname:'127.0.0.1',port:0,...(nginxBin?{}:{createServer,serverOptions:{key:readFileSync(join(temp,'key.pem')),cert:readFileSync(join(temp,'cert.pem'))}})});
 await once(server,'listening');
-const origin=`https://127.0.0.1:${server.address().port}`;
+let origin=`https://127.0.0.1:${server.address().port}`;
 const id='b'.repeat(32),signature='2'.repeat(88);
-let browser,state,availability={available:true,reason:''},posts=0;
-const report={scope:'Local Circle-profile DOM fixtures only; no Devnet or economic acceptance',checks:[],browser:''};
+const report={scope:'Local Circle-profile DOM fixtures only; no Devnet or economic acceptance',ingress:nginxBin?'e2e/nginx-public-demo.conf':'direct application',checks:[],browser:''};
 try {
+  if(nginxBin) {
+    const reservation=createPortReservation();reservation.listen(0,'127.0.0.1');await once(reservation,'listening');
+    const port=reservation.address().port;await new Promise(resolve=>reservation.close(resolve));
+    origin=`https://127.0.0.1:${port}`;
+    const fragment=readFileSync(new URL('../deploy/e2e/nginx-public-demo.conf',import.meta.url),'utf8');
+    writeFileSync(join(temp,'routes.conf'),fragment.replaceAll('http://127.0.0.1:28888',`http://127.0.0.1:${server.address().port}`));
+    writeFileSync(join(temp,'nginx.conf'),`daemon off;
+master_process off;
+pid "${temp}/nginx.pid";
+error_log stderr notice;
+events { worker_connections 64; }
+http {
+  access_log off;
+  map $request_method $capture402_e2e_public_post { default ""; POST $binary_remote_addr; }
+  limit_req_zone $capture402_e2e_public_post zone=capture402_e2e_demo_public:1m rate=20r/m;
+  client_body_temp_path "${temp}/body";
+  proxy_temp_path "${temp}/proxy";
+  server {
+    listen 127.0.0.1:${port} ssl;
+    ssl_certificate "${temp}/cert.pem";
+    ssl_certificate_key "${temp}/key.pem";
+    include "${temp}/routes.conf";
+  }
+}
+`);
+    const args=['-e','stderr','-p',temp+'/','-c',join(temp,'nginx.conf')];
+    const validation=spawnSync(nginxBin,['-t',...args],{encoding:'utf8'});
+    assert.equal(validation.status,0,validation.stderr);
+    nginx=spawn(nginxBin,args,{stdio:['ignore','ignore','pipe']});
+    nginx.stderr.on('data',()=>{});
+  }
   browser=await chromium.launch({headless:true});report.browser=browser.version();
   const context=await browser.newContext({ignoreHTTPSErrors:true,viewport:{width:1440,height:1000}}),page=await context.newPage(),errors=[];
+  if(nginxBin) {
+    let ready=false;
+    for(let attempt=0;attempt<50;attempt++) {
+      assert.equal(nginx.exitCode,null,'isolated nginx exited');
+      try {if((await context.request.get(origin+'/api/config')).status()===200){ready=true;break;}}catch{}
+      await delay(100);
+    }
+    assert(ready,'isolated nginx did not become ready');
+  }
   page.setDefaultTimeout(15000);page.setDefaultNavigationTimeout(15000);
   page.on('pageerror',e=>errors.push(e.message));
   await page.route('**/*',route=>{
     const req=route.request(),url=new URL(req.url());assert.equal(url.origin,origin,'loopback requests only');
     if(req.method()==='POST'){posts++;throw Error('DOM fixture must never submit');}
-    const data=url.pathname==='/api/faucet/status'?availability:url.pathname===`/api/orders/${id}`?state:undefined;
-    if(data)return route.fulfill({status:200,contentType:'application/json',body:JSON.stringify(data)});
     return route.continue();
   });
   await page.addInitScript(({identity})=>{
@@ -84,4 +129,8 @@ try {
   report.checks.push('Three viewport widths, no browser errors and zero POST/signing operations');
   writeFileSync(join(output,'circle-usdc-dom.json'),JSON.stringify(report,null,2));
   console.log(JSON.stringify(report));
-} finally {await browser?.close();await new Promise(resolve=>server.close(resolve));rmSync(temp,{recursive:true,force:true});}
+} finally {
+  await browser?.close();
+  if(nginx && nginx.exitCode===null){const closed=once(nginx,'exit');nginx.kill('SIGTERM');await closed;}
+  await new Promise(resolve=>server.close(resolve));rmSync(temp,{recursive:true,force:true});
+}
