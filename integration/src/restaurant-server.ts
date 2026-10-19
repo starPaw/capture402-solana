@@ -1,4 +1,5 @@
-import { selectedPaymentProfile, LEGACY_PROFILE, CIRCLE_PROFILE, circleApproval, profileHash, validateProfileRuntime, requireCircleRpc, requireCircleNamespace, type PaymentProfile } from './payment-profile.ts';
+import { selectedPaymentProfile, LEGACY_PROFILE, CIRCLE_PROFILE, circleApproval, profileHash, validateProfileRuntime, requireCircleRpc, requireProfileForTreasury, type PaymentProfile } from './payment-profile.ts';
+import { circleCustodyGuard } from './circle-custody.ts';
 import { operationalValue } from './operational-data.ts';
 // Static presentation remains available before provisioning. An unconfigured backend returns
 // 503; it never fabricates balances, receipts or signatures, or substitutes generated keys.
@@ -53,7 +54,7 @@ export function createPresentationApp(info: { programId: string; network: string
   else { for (const pattern of ["/api/*", "/resource"]) app.all(pattern, c => c.json({ error: "Devnet demo awaits keypairs, six-decimal test mint and token funding." }, 503)); }
   return app;
 }
-async function main() {
+export async function startRestaurant() {
   const profile=selectedPaymentProfile();
   const circle=profile.id===CIRCLE_PROFILE.id?circleApproval():undefined;
   const recordPath = process.env.SAC006_DEPLOYMENT_RECORD_PATH;
@@ -64,9 +65,13 @@ async function main() {
   if (process.env.SAC006_SERVER_KEYPAIR_PATH && !existsSync(process.env.SAC006_SERVER_KEYPAIR_PATH)) missing.push("merchant key file");
   const info = { paymentProfile:profile,...(circle?{profileHash:profileHash(circle),mint:circle.mint,sponsor:circle.sponsor,merchant:circle.merchant}:{}), programId: record.programId, network: record.network.caip2, configured: false, reason: "Provisioning required" };
   let backend: Hono | undefined;
+  let guardCustody=()=>{};
   if (missing.length === 0) {
+    requireProfileForTreasury(profile,process.env.SAC006_FEE_PAYER as Address);
     if(circle && (record.programId!==circle.programId || record.network.genesisHash!==circle.genesisHash || record.network.caip2!==circle.network))throw Error("Circle deployment mismatch");
-    if(circle){requireCircleRpc(process.env.SOLANA_RPC_URL!);requireE2eRuntimeRpc(process.env.SOLANA_RPC_URL!,record);for(const key of ["SAC006_STORE_DIR","SAC006_RECLAIM_JOURNAL_DIR","SAC006_E2E_ORDER_ADMISSION_DIR"])requireCircleNamespace(process.env[key]??"");for(const path of [`${process.env.SAC006_STORE_DIR}-restaurant`])requireCircleNamespace(path);}
+    if(circle){requireCircleRpc(process.env.SOLANA_RPC_URL!);requireE2eRuntimeRpc(process.env.SOLANA_RPC_URL!,record);
+      guardCustody=circleCustodyGuard({resource:process.env.SAC006_STORE_DIR!,orders:`${process.env.SAC006_STORE_DIR}-restaurant`,
+        reclaims:process.env.SAC006_RECLAIM_JOURNAL_DIR??'',orderAdmission:process.env.SAC006_E2E_ORDER_ADMISSION_DIR??''});}
     const e2e = !!circle || process.env.SAC006_FEE_PAYER === e2eSponsor() || process.env.SAC006_SERVER_KEYPAIR_PATH!.includes('/capture402-e2e/');
     if (e2e) requireE2eRuntimeRpc(process.env.SOLANA_RPC_URL!,record);
     const b3Recovery = e2e && process.env.SAC006_B3_RECOVERY_POLICY_PATH ? JSON.parse(trustedRuntimeFile(process.env.SAC006_B3_RECOVERY_POLICY_PATH)) : undefined;
@@ -117,10 +122,15 @@ async function main() {
       if(config.origin!==p.origin || config.network!==p.network || config.programId!==p.programId || config.feePayer!==p.sponsor || server.address!==p.merchant || config.asset!==p.mint)throw Error('public merchant demo runtime identity differs');
       config.publicMerchantDemo=true;
     }
+    guardCustody();
     backend = createRestaurantApp(config); info.configured = true;
     Object.assign(info, { sponsor: config.feePayer, merchant: server.address, mint: config.asset, reason: undefined,...(faucet?{faucetEnabled:true}:{}),...(config.publicMerchantDemo?{publicMerchantDemoEnabled:true}:{}) });
   }
   console.log(missing.length ? `Restaurant UI available; missing configuration: ${missing.join(", ")}` : "Restaurant backend enabled against accepted Devnet deployment");
-  serve({ fetch: createPresentationApp(info, backend).fetch, hostname: process.env.SAC006_HOST ?? "127.0.0.1", port: Number(process.env.SAC006_RESOURCE_PORT ?? 8788) });
+  const app=createPresentationApp(info, backend);
+  serve({ fetch: (request,env)=>{
+    try {guardCustody();} catch {return new Response('Circle custody unavailable',{status:503});}
+    return app.fetch(request,env);
+  }, hostname: process.env.SAC006_HOST ?? "127.0.0.1", port: Number(process.env.SAC006_RESOURCE_PORT ?? 8788) });
 }
-if (process.argv[1]?.endsWith("restaurant-server.ts")) main().catch(() => { console.error("Restaurant startup stopped; verify private configuration and accepted Devnet identity."); process.exitCode = 1; });
+if (process.argv[1]?.endsWith("restaurant-server.ts")) startRestaurant().catch(() => { console.error("Restaurant startup stopped; verify private configuration and accepted Devnet identity."); process.exitCode = 1; });

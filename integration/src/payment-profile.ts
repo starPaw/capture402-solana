@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { realpathSync } from 'node:fs';
 import { isAddress, type Address } from '@solana/kit';
-import { operationalValue } from './operational-data.ts';
+import { loadOperationalData, operationalValue } from './operational-data.ts';
 export const DEVNET_NETWORK = 'solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
 export const DEVNET_GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG';
 export const CIRCLE_MINT = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU' as Address;
@@ -40,6 +40,14 @@ export function selectedPaymentProfile(selection=process.env.SAC006_PAYMENT_PROF
   circleApproval();return CIRCLE_PROFILE;
 }
 export const circleApproval=()=>validateCircleApproval(operationalValue('circleUsdcDemoProfile'));
+// Treasury identity comes from installation authority, even when profile flags are absent.
+// Do not catch policy-reader errors: unavailable/malformed trust must refuse startup.
+export function requireProfileForTreasury(profile:PaymentProfile,treasury:Address):void {
+  const value=loadOperationalData().circleUsdcDemoProfile;
+  if(value===undefined)return;
+  const approved=validateCircleApproval(value);
+  if(treasury===approved.treasury && profile!==CIRCLE_PROFILE)throw Error('approved Circle treasury requires the Circle payment profile');
+}
 export function validateProfileRuntime(profile:PaymentProfile,runtime:{network:string;programId:Address;asset:Address;feePayer:Address;server:{address:Address};origin:string}) {
   if(profile.id!==CIRCLE_PROFILE.id) {if(profile!==LEGACY_PROFILE)throw Error('unsupported payment profile');return;}
   const p=circleApproval();

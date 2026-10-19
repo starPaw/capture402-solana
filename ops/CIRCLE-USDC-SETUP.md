@@ -32,7 +32,7 @@ Official references: [Circle USDC contract addresses](https://developers.circle.
 
 ## Trusted approval and isolated custody
 
-Leaving `SAC006_PAYMENT_PROFILE` unset or setting `legacy-test-v1` preserves the legacy faucet (1,000 custom tokens) and 100-token payment lab. Setting it to `circle-usdc-v1` on **both** facilitator and restaurant only selects a profile; it cannot approve one. The fixed root-owned `/etc/capture402/operational-data.json` must contain a separately reviewed `circleUsdcDemoProfile` object with exactly these fields:
+Leaving `SAC006_PAYMENT_PROFILE` unset or setting `legacy-test-v1` preserves the legacy faucet (1,000 custom tokens) and 100-token payment lab for the legacy treasury. A treasury named in the trusted Circle approval requires `circle-usdc-v1` on **both** facilitator and restaurant; a missing/legacy selector refuses before constructing RPC or opening campaign journals, regardless of key filename. Selecting a profile cannot approve one. The fixed root-owned `/etc/capture402/operational-data.json` must contain a separately reviewed `circleUsdcDemoProfile` object with exactly these fields:
 
 ```json
 {
@@ -67,7 +67,7 @@ This is an unusable template, not an approval. The source validator rejects plac
 
 Add `circleUsdcAdmissionContracts` alongside the existing `admissionContracts`, with `orders` and `relay-attempts` contracts. Each has its own approved `reference`, `initialMaximum` (100 or 600 respectively) and an empty `migrations` array for this newly approved campaign. Keep legacy contracts and all historical migration archives unchanged. Initialize the two new admission journals using their existing `AdmissionJournal.initialize` API and matching approved contracts, source digest and reviewed starting counts. Never initialize over existing/partial custody.
 
-Pre-create private, symlink-free directories (0700, intended service owner) beneath `/var/lib/capture402-e2e/circle-usdc-v1/`; runtime refuses aliases or legacy paths. Configure separate ports/origin and the following isolated locations before any separately authorized service activation:
+Pre-create private, symlink-free directories (0700, intended service owner) beneath `/var/lib/capture402-e2e/circle-usdc-v1/`. After initialization, independently inspect and root-approve their identities in `circleUsdcCustody`; a namespace prefix alone does not authorize custody. Configure separate ports/origin and the following isolated locations before any separately authorized service activation:
 
 | Setting/store | Circle location |
 | --- | --- |
@@ -78,6 +78,21 @@ Pre-create private, symlink-free directories (0700, intended service owner) bene
 | `SAC006_STORE_DIR` | A pre-created resource store beneath the Circle namespace; also pre-create its `-restaurant` sibling |
 | `SAC006_RECLAIM_JOURNAL_DIR` | A pre-created reclaim journal beneath the Circle namespace |
 | `SAC006_E2E_ORDER_ADMISSION_DIR` | A pre-created order admission directory beneath the Circle namespace |
+
+`circleUsdcCustody` has exactly `schema: 1`, `profileHash: profileHash(approval)` and `stores`. `stores` contains exactly the eight roles below. Each role has exactly `path` (the canonical absolute directory path), `device` and `inode` (decimal strings from `lstatSync(path, {bigint: true}).dev.toString()` and `.ino.toString()`). Record actual identities privately after inspecting the original stores; do not copy synthetic test identities. The native budget and faucet paths are fixed as above. All roles must have distinct paths and filesystem identities, with no role nested inside another.
+
+| Role | Path binding |
+| --- | --- |
+| `submissions` | Exact `SAC006_FACILITATOR_JOURNAL_DIR` |
+| `relayAdmission` | Exact `SAC006_E2E_RELAY_ADMISSION_DIR` |
+| `campaignBudget` | Fixed facilitator campaign-budget directory |
+| `faucet` | Fixed facilitator faucet directory |
+| `resource` | Exact `SAC006_STORE_DIR` |
+| `orders` | Exact `SAC006_STORE_DIR` plus `-restaurant` |
+| `reclaims` | Exact `SAC006_RECLAIM_JOURNAL_DIR` (required for Circle) |
+| `orderAdmission` | Exact `SAC006_E2E_ORDER_ADMISSION_DIR` |
+
+Each service verifies its roles before RPC construction or journal opening, again before serving, and before each HTTP request. A missing manifest, fresh sibling, renamed/replaced directory, alias, mode/owner change or mismatch refuses; the service never initializes, migrates or repairs a store to pass this check. Keep original directory identities, counts, locks, reservations and UNKNOWN wires/signatures across restarts. Replacing storage requires separately approved migration evidence accounting for original used counts and unresolved liabilities, a stopped installation and a reviewed successor trust record. Updating environment variables, recreating a path or copying an approval reference is insufficient. This custody record is separate from `circleUsdcDemoProfile`, so it does not rewrite its schema or existing profile-bound hashes. Existing Circle installations require separate approval to install the new custody record before activating this source.
 
 Initialize the new native budget using `CampaignBudget.initialize` with the approved sponsor, browser, genesis, reference and `spendLimit: "1000000000"`. This is a new separately approved campaign, not a migration or reset of an old budget. Keep any old uncertain economics and reservations untouched; installation approval must account for all unresolved liabilities before allowing a new campaign. Existing release controllers do not automatically install this profile or migrate legacy configuration.
 
