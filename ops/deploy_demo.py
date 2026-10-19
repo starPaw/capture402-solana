@@ -198,7 +198,7 @@ def check_order_routes() -> None:
     # A missing Origin fails in application middleware before mutable work.
     # Insist on that JSON response, never only a proxy-supplied status.
     for url in ("http://127.0.0.1:8788/api/orders",
-                "https://example.invalid/api/orders"):
+                deployment_config.origin("publicOrigin") + "/api/orders"):
         status, body, headers = response(url, method="POST", data=b"{}")
         content_type = next((v for k, v in headers.items()
                              if k.lower() == "content-type"), "")

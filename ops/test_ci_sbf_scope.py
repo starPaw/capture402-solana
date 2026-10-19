@@ -4,6 +4,17 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 
 class SourceBuildTests(unittest.TestCase):
+    def test_signed_wire_operator_suites_run_after_node_and_dependencies(self):
+        text = (ROOT / '.github/workflows/components.yml').read_text()
+        components, integration = text.split('  integration:\n', 1)
+        command = "python3 -B -m unittest discover -s ops -p 'test_*.py'"
+        self.assertNotIn(command, components)
+        self.assertEqual(integration.count(command), 2)
+        self.assertLess(integration.index('actions/setup-node@'), integration.index('npm ci --prefix integration'))
+        self.assertLess(integration.index('npm ci --prefix integration'), integration.index(command))
+        self.assertIn('sudo env PATH="$PATH" GITHUB_ACTIONS=true CAPTURE402_SYSTEMD_TEST=1', integration)
+        self.assertNotIn("-p 'test_reconcile_wire.py'", integration)
+
     def test_source_build_uses_locked_pinned_toolchain(self):
         for name in ('test-sac001.sh', 'test-sac002.sh', 'test-sac003.sh'):
             data = (ROOT / 'scripts' / name).read_text()

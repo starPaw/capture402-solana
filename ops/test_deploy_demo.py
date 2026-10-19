@@ -243,6 +243,11 @@ class PrivateSourceTests(unittest.TestCase):
 
 
 class HealthTests(unittest.TestCase):
+    def setUp(self):
+        trusted_origin = mock.patch.object(cd.deployment_config, "origin", return_value="https://payments.fixture.example")
+        self.origin = trusted_origin.start()
+        self.addCleanup(trusted_origin.stop)
+
     def test_html_nginx_403_is_not_a_healthy_post_route(self):
         with mock.patch.object(cd, "response", return_value=(
             403, b"<html>nginx denied</html>", {"Content-Type": "text/html"}
@@ -262,8 +267,16 @@ class HealthTests(unittest.TestCase):
             cd.check_order_routes()
         self.assertEqual(requested, [
             ("http://127.0.0.1:8788/api/orders", "POST", b"{}"),
-            ("https://example.invalid/api/orders", "POST", b"{}"),
+            ("https://payments.fixture.example/api/orders", "POST", b"{}"),
         ])
+        self.origin.assert_called_once_with("publicOrigin")
+
+    def test_unavailable_trusted_origin_stops_before_any_health_request(self):
+        self.origin.side_effect = RuntimeError("trusted public origin unavailable")
+        with mock.patch.object(cd, "response") as response:
+            with self.assertRaisesRegex(RuntimeError, "trusted public origin unavailable"):
+                cd.check_order_routes()
+        response.assert_not_called()
 
     def test_json_proxy_403_with_wrong_body_is_rejected(self):
         with mock.patch.object(cd, "response", return_value=(
