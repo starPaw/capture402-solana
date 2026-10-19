@@ -5,6 +5,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { digest, MAXIMUM, MINT, normalizeRows, paymentClient, PRICE, Store, tool } from './common.mjs';
 
+const activeStores = new WeakSet();
+
 export async function buy({ payments, merchant, store, intent, mandateId, payer, payee, rows }) {
   if (!/^[A-Za-z0-9._:-]{16,128}$/.test(intent)) throw Error('STABLE_INTENT_REQUIRED');
   const input = normalizeRows(rows);
@@ -13,29 +15,32 @@ export async function buy({ payments, merchant, store, intent, mandateId, payer,
   let record = store.read(id);
   if (record && record.commitment !== commitment) throw Error('INTENT_CONFLICT');
   if (record?.stage === 'done') return record.result;
-  if (record || store.blocked) throw Error('ORIGINAL_OPERATION_UNRESOLVED');
-  const quote = await tool(merchant, 'quote_report', { intent, mandateId, rows: input });
-  if (quote.payer !== payer || quote.merchant !== payee || quote.mint !== MINT || quote.maximum !== MAXIMUM ||
-      quote.price !== '650000' || quote.inputSha256 !== digest(input)) throw Error('QUOTE_DIFFERS');
-  record = { schema: 1, id, commitment, stage: 'hold_pending', quote };
-  store.save(record);
+  if (record || store.blocked || activeStores.has(store)) throw Error('ORIGINAL_OPERATION_UNRESOLVED');
+  activeStores.add(store); // Own this store before the first await, including for other intents.
   try {
-    const held = await tool(payments, 'hold', { actor: payer, mandateId, payee, amount: MAXIMUM,
-      mint: MINT, idempotencyKey: `report:${quote.orderId}:hold` });
-    if (typeof held.hold?.id !== 'string') throw Error('HOLD_UNPROVEN');
-    record.holdId = held.hold.id;
-    record.stage = 'purchase_pending'; store.save(record);
-    const result = await tool(merchant, 'purchase_report', { orderId: quote.orderId, holdId: record.holdId });
-    if (result.orderId !== quote.orderId || result.stage !== 'done' || result.receipt?.profile !== 'mock' ||
-        result.receipt?.holdId !== record.holdId || result.receipt?.grossCaptured !== PRICE || result.receipt?.released !== '350000' ||
-        result.artifact?.sha256 !== quote.artifactSha256 ||
-        typeof result.artifact?.utf8 !== 'string' || createHash('sha256').update(result.artifact.utf8).digest('hex') !== result.artifact.sha256) throw Error('ARTIFACT_DIFFERS');
-    record.stage = 'done'; record.result = result; store.save(record);
-    return result;
-  } catch {
-    store.blocked = true;
-    throw Error('PURCHASE_UNRESOLVED_NO_RETRY');
-  }
+    const quote = await tool(merchant, 'quote_report', { intent, mandateId, rows: input });
+    if (quote.payer !== payer || quote.merchant !== payee || quote.mint !== MINT || quote.maximum !== MAXIMUM ||
+        quote.price !== '650000' || quote.inputSha256 !== digest(input)) throw Error('QUOTE_DIFFERS');
+    record = { schema: 1, id, commitment, stage: 'hold_pending', quote };
+    store.save(record);
+    try {
+      const held = await tool(payments, 'hold', { actor: payer, mandateId, payee, amount: MAXIMUM,
+        mint: MINT, idempotencyKey: `report:${quote.orderId}:hold` });
+      if (typeof held.hold?.id !== 'string') throw Error('HOLD_UNPROVEN');
+      record.holdId = held.hold.id;
+      record.stage = 'purchase_pending'; store.save(record);
+      const result = await tool(merchant, 'purchase_report', { orderId: quote.orderId, holdId: record.holdId });
+      if (result.orderId !== quote.orderId || result.stage !== 'done' || result.receipt?.profile !== 'mock' ||
+          result.receipt?.holdId !== record.holdId || result.receipt?.grossCaptured !== PRICE || result.receipt?.released !== '350000' ||
+          result.artifact?.sha256 !== quote.artifactSha256 ||
+          typeof result.artifact?.utf8 !== 'string' || createHash('sha256').update(result.artifact.utf8).digest('hex') !== result.artifact.sha256) throw Error('ARTIFACT_DIFFERS');
+      record.stage = 'done'; record.result = result; store.save(record);
+      return result;
+    } catch {
+      store.blocked = true;
+      throw Error('PURCHASE_UNRESOLVED_NO_RETRY');
+    }
+  } finally { activeStores.delete(store); }
 }
 
 async function main() {

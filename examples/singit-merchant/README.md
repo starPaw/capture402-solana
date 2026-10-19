@@ -67,6 +67,12 @@ has stopped before any manual lock repair. The application lock is not a global
 wallet-custody solution; that remains MVP-04. Mock payment state is ephemeral:
 do not treat a restarted MockBackend as a restored economic ledger.
 
+Overlapping buyer calls sharing one store refuse before another payment attempt.
+Completion writes retain the original pending record until the replacement is
+durable. Failed completion candidates never authorize delivery, including after
+restart; preserve both the pending record and candidate bytes. A crash during
+pending-record cleanup may conservatively leave an order unresolved.
+
 ## Verification
 
 ```sh

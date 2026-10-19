@@ -40,6 +40,11 @@ export function report(rows) {
     sha256: createHash('sha256').update(utf8).digest('hex') } };
 }
 
+function syncDirectory(path) {
+  const fd = openSync(path, 'r');
+  try { fsyncSync(fd); } finally { closeSync(fd); }
+}
+
 /** One process owns each private application store. This is not wallet custody. */
 export class Store {
   blocked = false;
@@ -62,7 +67,9 @@ export class Store {
   }
   read(id) {
     if (!/^[a-f0-9]{64}$/.test(id)) throw Error('INVALID_ORDER');
-    const file = join(this.path, `${id}.json`);
+    // A completion candidate cannot supersede its original pending record until committed.
+    const pending = join(this.path, `${id}.pending.json`);
+    const file = existsSync(pending) ? pending : join(this.path, `${id}.json`);
     if (!existsSync(file)) return undefined;
     const stat = lstatSync(file);
     if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1 || (stat.mode & 0o077)) throw Error('INVALID_PRIVATE_RECORD');
@@ -70,17 +77,33 @@ export class Store {
     if (record.id !== id || record.schema !== 1 || !['quoted', 'prepared', 'hold_pending', 'held', 'purchase_pending', 'capture_pending', 'unknown', 'done'].includes(record.stage)) throw Error('INVALID_PRIVATE_RECORD');
     return record;
   }
-  all() { return readdirSync(this.path).filter(name => /^[a-f0-9]{64}\.json$/.test(name)).map(name => this.read(name.slice(0, -5))); }
+  all() {
+    const ids = new Set(readdirSync(this.path).map(name => /^([a-f0-9]{64})(?:\.pending)?\.json$/.exec(name)?.[1]).filter(Boolean));
+    return [...ids].map(id => this.read(id));
+  }
   save(record) {
     if (!/^[a-f0-9]{64}$/.test(record.id)) throw Error('INVALID_ORDER');
+    const file = join(this.path, `${record.id}.json`);
+    const pending = join(this.path, `${record.id}.pending.json`);
     const temp = join(this.path, `${record.id}.${randomUUID()}.tmp`);
     let fd;
     try {
+      if (existsSync(pending)) throw Error('ORIGINAL_OPERATION_UNRESOLVED');
       fd = openSync(temp, 'wx', 0o600);
       writeFileSync(fd, JSON.stringify(record)); fsyncSync(fd); closeSync(fd); fd = undefined;
-      renameSync(temp, join(this.path, `${record.id}.json`));
-      const directory = openSync(this.path, 'r');
-      try { fsyncSync(directory); } finally { closeSync(directory); }
+      if (record.stage === 'done') {
+        // Keep the original attempt durable and readable across any failed terminal write.
+        renameSync(file, pending);
+        syncDirectory(this.path);
+      }
+      renameSync(temp, file);
+      syncDirectory(this.path);
+      if (record.stage === 'done') {
+        unlinkSync(pending);
+        // Completion is already durable. A failed cleanup flush can only restore the
+        // conservative pending guard after a crash; it cannot admit an unflushed result.
+        try { syncDirectory(this.path); } catch {}
+      }
     } catch {
       this.blocked = true;
       if (fd !== undefined) closeSync(fd);

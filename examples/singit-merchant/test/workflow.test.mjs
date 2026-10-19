@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
+import fs from 'node:fs';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -32,6 +34,56 @@ function fixture(t, options = {}) {
   const merchant = new Merchant({ store, payments, payer: 'buyer-test', merchant: 'seller-test' });
   t.after(() => { store.close(); rmSync(dir, { recursive: true, force: true }); });
   return { merchant, store, dir, captures: () => captures };
+}
+
+function buyerFixture(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'capture402-buyer-test-'));
+  const store = new Store(join(dir, 'buyer')), merchantStore = new Store(join(dir, 'merchant'));
+  const holds = [];
+  let captures = 0;
+  const payments = { async callTool({ name, arguments: input }) {
+    if (name === 'hold') {
+      const hold = { id: `h-${holds.length + 1}`, payer: 'buyer-test', payee: 'seller-test', mint: MINT,
+        maximum: MAXIMUM, held: MAXIMUM, captured: '0', refunded: '0', captureDeadline: Math.floor(Date.now() / 1000) + 100 };
+      holds.push(hold);
+      return ok({ hold });
+    }
+    if (name === 'get_mandate') return ok({ mandate: { payer: 'buyer-test' }, holds });
+    assert.equal(name, 'capture'); captures++;
+    const hold = holds.find(item => item.id === input.holdId);
+    Object.assign(hold, { held: '0', captured: PRICE });
+    return ok({ hold, txSig: `mock-capture-${captures}` });
+  } };
+  const merchant = new Merchant({ store: merchantStore, payments, payer: 'buyer-test', merchant: 'seller-test' });
+  const client = { async callTool({ name, arguments: input }) {
+    if (name === 'quote_report') return ok(merchant.quote(input));
+    assert.equal(name, 'purchase_report');
+    return ok(await merchant.purchase(input));
+  } };
+  const request = { payments, merchant: client, store, intent, mandateId: 'm-1', payer: 'buyer-test', payee: 'seller-test', rows };
+  t.after(() => { store.close(); merchantStore.close(); rmSync(dir, { recursive: true, force: true }); });
+  return { dir: store.path, store, merchant, holds, captures: () => captures, request };
+}
+
+async function failCompletionDirectorySync(store, run, phase = 'completion') {
+  const originalSync = fs.fsyncSync;
+  let failures = 0;
+  fs.fsyncSync = fd => {
+    if (fs.fstatSync(fd).isDirectory()) {
+      const names = fs.readdirSync(store.path);
+      const pending = names.some(name => /^[a-f0-9]{64}\.pending\.json$/.test(name));
+      const completed = names.some(name => /^[a-f0-9]{64}\.json$/.test(name) &&
+        JSON.parse(fs.readFileSync(join(store.path, name), 'utf8')).stage === 'done');
+      if (phase === 'completion' ? completed : phase === 'pending' ? pending && !completed : completed && !pending) {
+        failures++;
+        throw Error(`synthetic directory fsync failure during ${phase}`);
+      }
+    }
+    return originalSync(fd);
+  };
+  syncBuiltinESMExports();
+  try { await run(); assert.equal(failures, 1, `inject exactly during ${phase}`); }
+  finally { fs.fsyncSync = originalSync; syncBuiltinESMExports(); }
 }
 
 test('report preserves integer precision and exposes duplicate rows without silently deduplicating totals', () => {
@@ -104,6 +156,114 @@ test('post-capture persistence failure withholds delivery and never retries', as
   assert.equal(f.captures(), 1);
 });
 
+test('post-rename fsync failure preserves pending evidence and withholds merchant delivery after restart', async t => {
+  const f = fixture(t), quote = f.merchant.quote(args);
+  const purchase = { orderId: quote.orderId, holdId: 'h-1' };
+  await failCompletionDirectorySync(f.store, async () => {
+    await assert.rejects(f.merchant.purchase(purchase), /NO_RETRY/);
+  });
+  assert.equal(f.store.blocked, true);
+  assert.equal(f.store.read(quote.orderId).stage, 'capture_pending');
+  assert.equal(f.merchant.status(quote.orderId).artifact, undefined);
+  await assert.rejects(f.merchant.purchase(purchase), /UNRESOLVED/);
+  assert.equal(JSON.parse(fs.readFileSync(join(f.dir, `${quote.orderId}.json`), 'utf8')).stage, 'done',
+    'retain the failed completion candidate as evidence');
+  f.store.close();
+  const restored = new Store(f.dir);
+  try {
+    const merchant = new Merchant({ store: restored, payments: { callTool() { throw Error('no payment expected'); } },
+      payer: 'buyer-test', merchant: 'seller-test' });
+    assert.equal(restored.blocked, true);
+    assert.equal(restored.read(quote.orderId).stage, 'capture_pending');
+    assert.equal(merchant.status(quote.orderId).artifact, undefined);
+    await assert.rejects(merchant.purchase(purchase), /UNRESOLVED/);
+    assert.throws(() => merchant.quote({ ...args, intent: 'synthetic-intent-0002' }), /UNRESOLVED/);
+    assert.equal(f.captures(), 1);
+  } finally { restored.close(); }
+});
+
+test('failed pending-guard fsync leaves a discoverable original even without the canonical record', async t => {
+  const f = fixture(t), quote = f.merchant.quote(args);
+  await failCompletionDirectorySync(f.store, async () => {
+    await assert.rejects(f.merchant.purchase({ orderId: quote.orderId, holdId: 'h-1' }), /NO_RETRY/);
+  }, 'pending');
+  assert.equal(fs.existsSync(join(f.dir, `${quote.orderId}.json`)), false);
+  assert.equal(f.store.all()[0].stage, 'capture_pending');
+  assert.equal(f.merchant.status(quote.orderId).artifact, undefined);
+  f.store.close();
+  const restored = new Store(f.dir);
+  try {
+    assert.equal(restored.blocked, true);
+    assert.equal(restored.all()[0].holdId, 'h-1');
+    assert.equal(f.captures(), 1);
+  } finally { restored.close(); }
+});
+
+test('cleanup fsync failure cannot invalidate an already durable completion', async t => {
+  const f = fixture(t), quote = f.merchant.quote(args);
+  let delivered;
+  await failCompletionDirectorySync(f.store, async () => {
+    delivered = await f.merchant.purchase({ orderId: quote.orderId, holdId: 'h-1' });
+  }, 'cleanup');
+  assert.equal(delivered.stage, 'done');
+  assert.equal(f.store.blocked, false);
+  f.store.close();
+  const restored = new Store(f.dir);
+  try {
+    const merchant = new Merchant({ store: restored, payments: { callTool() { throw Error('no payment expected'); } },
+      payer: 'buyer-test', merchant: 'seller-test' });
+    assert.deepEqual(merchant.status(quote.orderId), delivered);
+    assert.equal(f.captures(), 1);
+  } finally { restored.close(); }
+});
+
+test('buyer completion fsync failure cannot replay candidate bytes or create another hold after restart', async t => {
+  const f = buyerFixture(t);
+  await failCompletionDirectorySync(f.store, async () => {
+    await assert.rejects(buy(f.request), /NO_RETRY/);
+  });
+  assert.equal(f.store.all()[0].stage, 'purchase_pending');
+  assert.equal(f.store.all()[0].holdId, 'h-1');
+  await assert.rejects(buy(f.request), /UNRESOLVED/);
+  f.store.close();
+  const restored = new Store(f.dir);
+  try {
+    assert.equal(restored.blocked, true);
+    await assert.rejects(buy({ ...f.request, store: restored }), /UNRESOLVED/);
+    await assert.rejects(buy({ ...f.request, store: restored, intent: 'synthetic-intent-0002' }), /UNRESOLVED/);
+    assert.equal(f.holds.length, 1);
+    assert.equal(f.captures(), 1);
+  } finally { restored.close(); }
+});
+
+test('overlapping buyer calls create one hold and retain its original identity', async t => {
+  for (const overlappingIntent of [intent, 'synthetic-intent-0002']) {
+    await t.test(overlappingIntent === intent ? 'same intent' : 'different intent in the same store', async t => {
+      const f = buyerFixture(t);
+      const outcomes = await Promise.allSettled([buy(f.request), buy({ ...f.request, intent: overlappingIntent })]);
+      assert.equal(outcomes[0].status, 'fulfilled');
+      assert.equal(outcomes[1].status, 'rejected');
+      assert.match(outcomes[1].reason.message, /UNRESOLVED/);
+      assert.equal(f.holds.length, 1);
+      assert.equal(f.captures(), 1);
+      assert.equal(f.store.all().length, 1);
+      assert.equal(f.store.all()[0].holdId, f.holds[0].id);
+      assert.deepEqual(await buy(f.request), outcomes[0].value, 'the completed original remains replayable');
+      assert.equal(f.holds.length, 1);
+    });
+  }
+});
+
+test('a quote refusal releases the buyer guard before any economic operation', async t => {
+  const f = buyerFixture(t);
+  await assert.rejects(buy({ ...f.request, merchant: { async callTool() { throw Error('QUOTE_UNAVAILABLE'); } } }), /QUOTE_UNAVAILABLE/);
+  assert.equal(f.holds.length, 0);
+  assert.equal(f.store.all().length, 0);
+  assert.equal((await buy(f.request)).stage, 'done');
+  assert.equal(f.holds.length, 1);
+  assert.equal(f.captures(), 1);
+});
+
 test('buyer lost hold reply cannot create a second hold on rerun', async t => {
   const f = fixture(t), q = f.merchant.quote(args);
   let sends = 0;
@@ -144,7 +304,11 @@ test('actual SingIt mock HTTP → merchant stdio MCP → buyer workflow, duplica
   await merchant.connect(new StdioClientTransport({ command: process.execPath, args: [fileURLToPath(new URL('../merchant.mjs', import.meta.url))], env, stderr: 'pipe' }));
   buyerStore = new Store(join(root, 'buyer'));
   const request = { payments, merchant, store: buyerStore, intent, mandateId: issued.mandate.id, payer: 'buyer-agent', payee: 'seller-agent', rows };
-  const first = await buy(request);
+  const attempts = await Promise.allSettled([buy(request), buy(request)]);
+  assert.equal(attempts[0].status, 'fulfilled');
+  assert.equal(attempts[1].status, 'rejected');
+  assert.match(attempts[1].reason.message, /UNRESOLVED/);
+  const first = attempts[0].value;
   assert.equal(first.stage, 'done');
   assert.equal(JSON.parse(first.artifact.utf8).total, '9007199254740995');
   assert.deepEqual(await buy(request), first);
