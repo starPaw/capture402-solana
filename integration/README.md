@@ -39,6 +39,11 @@ Use [src/reclaim-offer-cli.ts](src/reclaim-offer-cli.ts) to prepare the unsigned
 
 Refund is different: before the refund deadline the merchant funds it from its own token account, bounded by captured, unrefunded value. It needs merchant consent and liquidity and never restores the authorization budget.
 
+The reproducible [offline recovery/refund scenarios](RECOVERY-OFFLINE.md) cover
+the existing payer-only route, SOL shortage, captured-fund preservation, merchant
+authority/liquidity and lost responses. They define the private deployment-binding
+checklist for SingIt PR #23; they do not authorize or accept live recovery.
+
 ## Circle USDC payment lab
 
 The optional `circle-usdc-v1` profile distributes 0.50 Circle Devnet USDC and authorizes a maximum of 0.10 USDC for the payment lab, with 0.04 and 0.025 captures and a 0.035 release. The normal-path refund example is 0.01 USDC. A root-owned profile approval, separately approved campaign budget, dedicated pre-funded treasury, isolated storage and explicitly approved QuickNode Devnet endpoint are required. Legacy mode remains the default; the separate paid-report example retains its existing amounts. See [Circle setup](../ops/CIRCLE-USDC-SETUP.md) for configuration fields, policy hash boundaries, manual Circle Faucet funding and separately authorized live verification.
