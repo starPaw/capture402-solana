@@ -129,6 +129,12 @@ bounded tools are preapproved for this operator-authorized intent; this is not
 permission for arbitrary model tools. Output paths are exclusive, preserving
 earlier traces. A model answer without the four successful calls is rejected.
 
+The opt-in [Bedrock Converse buyer](BEDROCK.md) uses the same buyer MCP and private
+run configuration, with a separate bounded provider loop. Codex remains the default
+for `mock-llm.mjs`; `--bedrock` explicitly selects the new runner. Offline tests
+inject the SDK and require no AWS credentials. Real Bedrock inference needs its
+own authorization, including when the payment backend is mock.
+
 The `devnet` identity JSON contains exactly `schema`, `name`, `network`,
 `genesisHash`, `programId`, `programDataAddress`, `executableSha256`,
 `deploymentSlot`, `upgradeAuthority`, `abiCommit`, `mint`, `tokenProgram`, `payer`
