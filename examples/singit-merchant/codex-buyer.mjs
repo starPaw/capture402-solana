@@ -1,35 +1,13 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
+import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { startBuyerMcp } from './buyer-mcp.mjs';
+import { STEPS, outsideGit, readRunConfig, buyerProcessEnv } from './run-config.mjs';
+export { BUYER_ENV, STEPS, readRunConfig } from './run-config.mjs';
 
 const here = fileURLToPath(import.meta.url);
-export const BUYER_ENV = ['PAYMENT_PROFILE', 'PAYMENT_PROFILE_FILE', 'PAYMENT_MCP_URL', 'REPORT_PAYER', 'REPORT_MERCHANT',
-  'BUYER_STATE_DIR', 'MERCHANT_STATE_DIR', 'REPORT_CAPTURE_DEADLINE', 'REPORT_REFUND_DEADLINE',
-  'SINGIT_BUYER_TOKEN', 'SINGIT_MERCHANT_TOKEN'];
-export const STEPS = ['quote_report', 'hold_report', 'purchase_report', 'get_report'];
-
-function outsideGit(path) {
-  for (let parent = path; ; parent = dirname(parent)) {
-    if (existsSync(join(parent, '.git'))) throw Error('PRIVATE_RUN_REQUIRED');
-    if (parent === dirname(parent)) break;
-  }
-}
-export function readRunConfig(path) {
-  if (!isAbsolute(path ?? '')) throw Error('PRIVATE_RUN_REQUIRED');
-  const info = lstatSync(path);
-  if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1 || info.uid !== process.getuid() ||
-      (info.mode & 0o077) || info.size > 65536) throw Error('PRIVATE_RUN_REQUIRED');
-  outsideGit(dirname(realpathSync(path)));
-  const value = JSON.parse(readFileSync(path, 'utf8'));
-  if (value.schema !== 1 || typeof value.environment !== 'object' || !value.environment ||
-      Object.entries(value.environment).some(([key, item]) => !BUYER_ENV.includes(key) || typeof item !== 'string') ||
-      !isAbsolute(value.inputPath ?? '') || !isAbsolute(value.evidenceDir ?? '') ||
-      typeof value.mandateId !== 'string' || !/^[A-Za-z0-9._:-]{16,128}$/.test(value.intent)) throw Error('PRIVATE_RUN_REQUIRED');
-  return value;
-}
 
 export function codexArguments(configPath, workdir, answerPath, schemaPath) {
   // No credential is put in an argument or prompt. Only the trusted MCP adapter reads the private config.
@@ -94,7 +72,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const [first, second] = process.argv.slice(2);
   const run = first === '--mcp' ? async () => {
     const config = readRunConfig(second);
-    const env = { PATH: process.env.PATH, HOME: process.env.HOME, ...config.environment };
+    const env = buyerProcessEnv(config);
     await startBuyerMcp({ env, inputPath: config.inputPath, mandateId: config.mandateId, intent: config.intent });
   } : async () => { await runCodexBuyer(first); console.log('Model run finished; inspect the private answer and tool trace.'); };
   run().catch(() => { console.error('Model buyer stopped; preserve private state and originals.'); process.exitCode = 1; });

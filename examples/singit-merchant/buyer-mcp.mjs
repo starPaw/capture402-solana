@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { BuyerSession, merchantProcessEnv } from './buyer.mjs';
 import { paymentClient, Store } from './common.mjs';
 import { profileFromEnv } from './profile.mjs';
+import { readRunConfig, buyerProcessEnv } from './run-config.mjs';
 
 export function buyerServer(session) {
   const server = new McpServer({ name: 'mandated-report-buyer', version: '0.1.0' });
@@ -59,7 +60,14 @@ export async function startBuyerMcp({ env, inputPath, mandateId, intent }) {
 }
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   const [inputPath, mandateId, intent] = process.argv.slice(2);
-  startBuyerMcp({ env: process.env, inputPath, mandateId, intent }).catch(() => {
+  const run = async () => {
+    if (inputPath === '--run-config') {
+      const config = readRunConfig(mandateId);
+      return startBuyerMcp({ env: buyerProcessEnv(config), inputPath: config.inputPath, mandateId: config.mandateId, intent: config.intent });
+    }
+    return startBuyerMcp({ env: process.env, inputPath, mandateId, intent });
+  };
+  run().catch(() => {
     console.error('Buyer stopped; preserve private intent, journal and originals.'); process.exitCode = 1;
   });
 }
