@@ -1,3 +1,4 @@
+import { runtimeOrderConfig } from "../src/order-runtime.ts";
 // SAC-006 criterion 3 on Devnet: controlled fault injection around the real `RpcLedger`, at the
 // resource boundary, over the x402 v2 HTTP transport. `FaultyLedger` lets an armed call genuinely
 // broadcast and poll to finalized, then degrades only the result handed to the facilitator:
@@ -101,7 +102,7 @@ async function main(): Promise<void> {
   const journalDir = join(outDir, "fault-facilitator-journal");
   const journal = new FileSubmissionJournal(journalDir);
   const bearer = crypto.randomUUID();
-  const facilitator = new Facilitator({ network: record.network.caip2, programId: record.programId, feePayer: sponsor, ledger: faulty, journal, observationKey: bearer });
+  const facilitator = new Facilitator({ ...runtimeOrderConfig(record, server.address, bearer), network: record.network.caip2, programId: record.programId, feePayer: sponsor, ledger: faulty, journal, observationKey: bearer });
   const sponsorship = new SponsorshipGuard({ ledger: real, feePayer: sponsor.address, maxAttempts: 1000, minLamportsBalance: 1n });
   const gateway = await startApp(createGatewayApp(facilitator, { bearerToken: bearer, sponsorship, allowlist: { merchant: server.address, mint } }));
 
@@ -115,6 +116,7 @@ async function main(): Promise<void> {
     createResourceApp({
       facilitatorUrl: gateway.url,
       bearerToken: bearer,
+      orderSigningKey: bearer,
       network: record.network.caip2,
       programId: record.programId,
       feePayer: sponsor.address,

@@ -70,8 +70,9 @@ def check(root, staged=False):
     if staged:
         files = indexed_files(root)
     else:
-        names = subprocess.check_output(['git', 'ls-files', '-z'], cwd=root).split(b'\0')
-        files = ((name.decode(), (root / name.decode()).read_bytes()) for name in names if name)
+        names = subprocess.check_output(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], cwd=root).split(b'\0')
+        deleted = set(subprocess.check_output(['git', 'ls-files', '-z', '--deleted'], cwd=root).split(b'\0'))
+        files = ((name.decode(), (root / name.decode()).read_bytes()) for name in names if name and name not in deleted)
     errors, count = [], 0
     for name, data in files:
         count += 1
@@ -90,7 +91,7 @@ def main():
     errors, count = check(root, args.staged)
     for error in errors:
         print(error)
-    print(f'{count} tracked files checked; {len(errors)} local-path violations')
+    print(f'{count} source files checked; {len(errors)} local-path violations')
     return bool(errors)
 
 

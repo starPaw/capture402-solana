@@ -13,12 +13,22 @@ beforeAll(async()=>{h=await createHarness();Object.assign(globalThis,{window:new
 afterAll(async()=>{expect(h.ledger.submissions).toHaveLength(0);await h.close();Reflect.deleteProperty(globalThis,"window");});
 const decoder=getTransactionDecoder(), messageDecoder=getCompiledTransactionMessageDecoder();
 function legacy(bytes:Parameters<typeof messageDecoder.decode>[0]){const m=messageDecoder.decode(bytes);if(m.version!=="legacy")throw new Error("legacy message expected");return m;}
-async function args(){return{feePayer:h.facilitatorKey.address,lifetime:h.lifetime(),signers:[],instructions:[await authorizeInstruction({programId:h.facilitator.programId,payer:h.payer.address,server:h.server.address,mint:h.mint,funder:h.facilitatorKey.address,salt:h.newSalt(),maximum:M,captureDeadline:DC,refundDeadline:DR})]};}
+async function args(){return{feePayer:h.facilitatorKey.address,lifetime:h.lifetime(),signers:[],instructions:[await authorizeInstruction({ authorizeUntilSlot: 1500n,programId:h.facilitator.programId,payer:h.payer.address,server:h.server.address,mint:h.mint,funder:h.facilitatorKey.address,salt:h.newSalt(),maximum:M,captureDeadline:DC,refundDeadline:DR})]};}
 const account=()=>({address:h.payer.address,chains:["solana:devnet"],features:["solana:signTransaction"]});
 function connection(signTransaction:(input:any)=>Promise<any>){return{account:account(),wallet:{features:{"solana:signTransaction":{signTransaction}}}};}
 async function payerSigned(wire:Uint8Array){return[{signedTransaction:getBase64Encoder().encode(encodeTransaction(await partiallySignTransaction([h.payer.keyPair],decoder.decode(wire))))}];}
 const unsigned=async()=>encodeTransaction(await buildDemoTransaction(await args(),h.ledger));
 describe("finalized restaurant compute budget",()=>{
+  test.each(["version", "length", "expiry"])("obsolete or unsafe %s authorization never reaches the wallet",async fault=>{
+    const tx=Web3Transaction.from(Buffer.from(await unsigned(),"base64")),ix=tx.instructions.at(-1)!;
+    if(fault==="version")ix.data[1]=1;
+    if(fault==="length")ix.data=ix.data.subarray(0,67);
+    if(fault==="expiry")ix.data.writeBigUInt64LE((1n<<64n)-1n,67);
+    let called=false;
+    await expect(adapter.walletSign(connection(async()=>{called=true;return[];}),tx.serialize({requireAllSignatures:false,verifySignatures:false}).toString("base64"))).rejects.toThrow("v2");
+    expect(called).toBe(false);
+  });
+
   test("simulation is unsigned; the final budget exists before signing and sponsor signature verifies over the final message",async()=>{
     const start=h.ledger.simulated.length;
     const tx=await buildDemoTransaction({...await args(),signers:[h.facilitatorKey]},h.ledger);
@@ -113,7 +123,7 @@ describe("finalized restaurant compute budget",()=>{
     await expect(buildDemoTransaction(a,{simulate:async()=>kind==="failure"?{ok:false,error:"failure",logs:[]}:{ok:true,...(kind==="missing"?{}:{unitsConsumed:kind==="zero"?0n:200000n})}})).rejects.toThrow(/compute/);
   });
   test("the Devnet sponsor accepts the preset price but refuses excessive limit or price without submission",async()=>{
-    const facilitator=new Facilitator({network:h.ledger.network,programId:h.facilitator.programId,feePayer:h.facilitatorKey,ledger:h.ledger,...demoSponsorComputeBounds()});
+    const facilitator=new Facilitator({ ...h.orderConfig,network:h.ledger.network,programId:h.facilitator.programId,feePayer:h.facilitatorKey,ledger:h.ledger,...demoSponsorComputeBounds()});
     const offered=await buildDemoTransaction(await args(),h.ledger);
     const signed=await partiallySignTransaction([h.payer.keyPair],offered);
     expect(await facilitator.verify(h.body(authorizePayload(signed)))).toMatchObject({isValid:true});

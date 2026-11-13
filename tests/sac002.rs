@@ -3,22 +3,23 @@ use litesvm::{
     types::{FailedTransactionMetadata, TransactionResult},
     LiteSVM,
 };
-use solana_sdk::{
-    account::Account,
-    clock::Clock,
-    instruction::{AccountMeta, Instruction},
-    program_pack::Pack,
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-    system_instruction, system_program,
-    transaction::{Transaction, TransactionError},
-};
-use spl_token::state::{Account as TokenAccount, Mint};
+use solana_account::Account;
+use solana_address::Address as Pubkey;
+use solana_clock::Clock;
+use solana_instruction::{AccountMeta, Instruction};
+use solana_keypair::Keypair;
+use solana_program_pack::Pack;
+use solana_signer::Signer;
+use solana_system_interface::{instruction as system_instruction, program as system_program};
+use solana_transaction::Transaction;
+use solana_transaction_error::TransactionError;
+use spl_token_interface::state::{Account as TokenAccount, Mint};
 use svm_auth_capture::{
     authorize_data, capture_data, payment_address, void_data, Payment, ID, PAYMENT_LEN,
 };
 
 const NOW: i64 = 1_000;
+const E: u64 = 20;
 const DC: i64 = 1_100;
 const DR: i64 = 1_200;
 const M: u64 = 100;
@@ -40,8 +41,12 @@ impl Fixture {
     fn new() -> Self {
         let mut svm = LiteSVM::new().with_sigverify(true);
         // Fail loudly if the binary is missing; never substitute a native processor.
-        svm.add_program_from_file(ID, "target/deploy/svm_auth_capture.so")
-            .unwrap();
+        svm.add_program_from_file(
+            ID,
+            std::env::var("CAPTURE402_TEST_SBF")
+                .unwrap_or_else(|_| "target/deploy/svm_auth_capture.so".into()),
+        )
+        .unwrap();
         let payer = Keypair::new();
         let sponsor = Keypair::new();
         let server = Keypair::new();
@@ -58,10 +63,10 @@ impl Fixture {
                 &mint,
                 svm.minimum_balance_for_rent_exemption(Mint::LEN),
                 Mint::LEN as u64,
-                &spl_token::id(),
+                &spl_token_interface::id(),
             ),
-            spl_token::instruction::initialize_mint2(
-                &spl_token::id(),
+            spl_token_interface::instruction::initialize_mint2(
+                &spl_token_interface::id(),
                 &mint,
                 &payer.pubkey(),
                 Some(&payer.pubkey()),
@@ -70,8 +75,8 @@ impl Fixture {
             .unwrap(),
             create_ata(&sponsor.pubkey(), &payer.pubkey(), &mint),
             create_ata(&sponsor.pubkey(), &server.pubkey(), &mint),
-            spl_token::instruction::mint_to(
-                &spl_token::id(),
+            spl_token_interface::instruction::mint_to(
+                &spl_token_interface::id(),
                 &mint,
                 &source,
                 &payer.pubkey(),
@@ -88,7 +93,7 @@ impl Fixture {
         );
         svm.send_transaction(tx).unwrap();
         let salt = [7; 32];
-        let payment = payment_address(&ID, &payer.pubkey(), &salt).0;
+        let payment = payment_address(&ID, &payer.pubkey(), &salt, E).0;
         let vault = ata(&payment, &mint);
         let mut f = Self {
             svm,
@@ -109,6 +114,7 @@ impl Fixture {
     fn time(&mut self, unix_timestamp: i64) {
         let mut clock = self.svm.get_sysvar::<Clock>();
         clock.unix_timestamp = unix_timestamp;
+        clock.slot = 10;
         self.svm.set_sysvar(&clock);
         assert_eq!(
             self.svm.get_sysvar::<Clock>().unix_timestamp,
@@ -128,13 +134,13 @@ impl Fixture {
                 AccountMeta::new(self.vault, false),
                 AccountMeta::new(self.sponsor.pubkey(), true),
                 AccountMeta::new_readonly(system_program::id(), false),
-                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_token_interface::id(), false),
                 AccountMeta::new_readonly(
-                    spl_associated_token_account_client::program::id(),
+                    spl_associated_token_account_interface::program::id(),
                     false,
                 ),
             ],
-            data: authorize_data(self.salt, M, DC, DR),
+            data: authorize_data(self.salt, M, DC, DR, E),
         }
     }
 
@@ -147,7 +153,7 @@ impl Fixture {
                 AccountMeta::new_readonly(self.mint, false),
                 AccountMeta::new(self.vault, false),
                 AccountMeta::new(self.source, false),
-                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_token_interface::id(), false),
             ],
             data: vec![1],
         }
@@ -255,7 +261,9 @@ impl Fixture {
                 capture_deadline: DC,
                 refund_deadline: DR,
                 held: M,
-                refundable: 0
+                refundable: 0,
+                authorize_until_slot: E,
+                rent_refund_recipient: self.sponsor.pubkey(),
             }
         );
     }
@@ -270,7 +278,7 @@ impl Fixture {
                 AccountMeta::new(self.vault, false),
                 AccountMeta::new(ata(&self.server.pubkey(), &self.mint), false),
                 AccountMeta::new(self.source, false),
-                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_token_interface::id(), false),
             ],
             data: capture_data(amount, release, h, f),
         }
@@ -300,6 +308,8 @@ impl Fixture {
             refund_deadline: DR,
             held: h,
             refundable: captured,
+            authorize_until_slot: E,
+            rent_refund_recipient: self.sponsor.pubkey(),
         };
         assert_eq!(self.state(), expected, "balances and every immutable term");
         assert!(h.checked_add(captured).unwrap() <= M);
@@ -326,16 +336,16 @@ impl Fixture {
 
     fn freeze(&mut self, key: Pubkey, frozen: bool) {
         let ix = if frozen {
-            spl_token::instruction::freeze_account(
-                &spl_token::id(),
+            spl_token_interface::instruction::freeze_account(
+                &spl_token_interface::id(),
                 &key,
                 &self.mint,
                 &self.payer.pubkey(),
                 &[],
             )
         } else {
-            spl_token::instruction::thaw_account(
-                &spl_token::id(),
+            spl_token_interface::instruction::thaw_account(
+                &spl_token_interface::id(),
                 &key,
                 &self.mint,
                 &self.payer.pubkey(),
@@ -357,19 +367,19 @@ impl Fixture {
 }
 
 fn ata(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
-    spl_associated_token_account_client::address::get_associated_token_address_with_program_id(
+    spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
         owner,
         mint,
-        &spl_token::id(),
+        &spl_token_interface::id(),
     )
 }
 
 fn create_ata(funder: &Pubkey, owner: &Pubkey, mint: &Pubkey) -> Instruction {
-    spl_associated_token_account_client::instruction::create_associated_token_account_idempotent(
+    spl_associated_token_account_interface::instruction::create_associated_token_account_idempotent(
         funder,
         owner,
         mint,
-        &spl_token::id(),
+        &spl_token_interface::id(),
     )
 }
 
@@ -378,7 +388,7 @@ fn invalid_argument(err: &FailedTransactionMetadata) {
         err.err,
         TransactionError::InstructionError(
             0,
-            solana_sdk::instruction::InstructionError::InvalidArgument
+            solana_instruction_error::InstructionError::InvalidArgument
         )
     );
 }
@@ -461,7 +471,7 @@ fn server_native_signature_cannot_be_replaced_by_payer_sponsor_or_facilitator() 
             err.err,
             TransactionError::InstructionError(
                 0,
-                solana_sdk::instruction::InstructionError::MissingRequiredSignature
+                solana_instruction_error::InstructionError::MissingRequiredSignature
             )
         );
         for role in [0, 1, 2] {
@@ -523,11 +533,11 @@ fn substituted_or_reassigned_server_destination_is_rejected() {
         ix.accounts[4].pubkey = ata(&f.outsider.pubkey(), &f.mint);
         f.fails(&[ix], Some(1));
         let receiver = ata(&f.server.pubkey(), &f.mint);
-        let set_authority = spl_token::instruction::set_authority(
-            &spl_token::id(),
+        let set_authority = spl_token_interface::instruction::set_authority(
+            &spl_token_interface::id(),
             &receiver,
             Some(&f.outsider.pubkey()),
-            spl_token::instruction::AuthorityType::AccountOwner,
+            spl_token_interface::instruction::AuthorityType::AccountOwner,
             &f.server.pubkey(),
             &[],
         )
@@ -702,7 +712,7 @@ fn atomic_partial_capture_void_and_full_capture_skip_zero_return() {
         let transfer_count = meta
             .logs
             .iter()
-            .filter(|line| line.contains("Instruction: TransferChecked"))
+            .filter(|line| *line == &format!("Program {} invoke [2]", spl_token_interface::id()))
             .count();
         assert_eq!(transfer_count, if amount == 100 { 1 } else { 2 });
         f.balances(0, amount, amount, 100 - amount, 0);
@@ -725,10 +735,10 @@ fn atomic_server_and_payer_cpi_failures_roll_back_and_repair_retry_same_pair() {
             .meta
             .logs
             .iter()
-            .filter(|s| s.contains("Instruction: TransferChecked"))
+            .filter(|s| *s == &format!("Program {} invoke [2]", spl_token_interface::id()))
             .count();
         assert_eq!(transfers, if payer_leg { 2 } else { 1 });
-        let token_success = format!("Program {} success", spl_token::id());
+        let token_success = format!("Program {} success", spl_token_interface::id());
         assert_eq!(
             err.meta
                 .logs
@@ -765,7 +775,7 @@ fn standalone_capture_and_void_failed_transfers_preserve_pair_for_retry() {
             .meta
             .logs
             .iter()
-            .any(|s| s.contains("Instruction: TransferChecked")));
+            .any(|s| *s == format!("Program {} invoke [2]", spl_token_interface::id())));
         f.balances(100, 0, 0, 0, 0);
         f.freeze(frozen, false);
         f.send(&[ix], Some(1)).unwrap();
@@ -798,8 +808,8 @@ fn terminal_holds_reject_all_server_operations_and_reauthorization_keep_identity
         let mut f = Fixture::funded();
         let payment_lamports = f.svm.get_balance(&f.payment).unwrap();
         let vault_lamports = f.svm.get_balance(&f.vault).unwrap();
-        let donate = spl_token::instruction::transfer_checked(
-            &spl_token::id(),
+        let donate = spl_token_interface::instruction::transfer_checked(
+            &spl_token_interface::id(),
             &f.source,
             &f.mint,
             &f.vault,
@@ -811,8 +821,8 @@ fn terminal_holds_reject_all_server_operations_and_reauthorization_keep_identity
         .unwrap();
         f.send(&[donate], Some(0)).unwrap();
         // Donation is outside accounting; replenish the fixture source to keep exact payout assertions.
-        let top_up = spl_token::instruction::mint_to(
-            &spl_token::id(),
+        let top_up = spl_token_interface::instruction::mint_to(
+            &spl_token_interface::id(),
             &f.mint,
             &f.source,
             &f.payer.pubkey(),

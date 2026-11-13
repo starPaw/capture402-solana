@@ -212,7 +212,7 @@ async function assess(c: Context, retryAfter?: string): Promise<{ s: RecoverySna
   paymentRead = await c.read(() => o.reader.getAccountAtLeast(order.payment, fence));
   if (paymentRead.kind !== "ok" || !slot(paymentRead.slot) || paymentRead.slot < fence || !paymentRead.account || paymentRead.account.owner !== o.identity.programId || paymentRead.account.executable !== false) refuse();
   const p = decodePayment(paymentRead.account.data), terms = order.required.accepts[0];
-  if (!p || p.payer !== order.payer || p.server !== terms.payTo || p.mint !== terms.asset || p.maximum.toString() !== terms.amount || p.captureDeadline !== BigInt(terms.extra.captureDeadline) || p.refundDeadline !== BigInt(terms.extra.refundDeadline) || await paymentAddress(o.identity.programId, p.payer, p.salt) !== order.payment || p.held <= 0n || p.held > p.maximum || p.refundable > p.maximum - p.held) refuse();
+  if (!p || p.payer !== order.payer || p.server !== terms.payTo || p.mint !== terms.asset || p.maximum.toString() !== terms.amount || p.captureDeadline !== BigInt(terms.extra.captureDeadline) || p.refundDeadline !== BigInt(terms.extra.refundDeadline) || await paymentAddress(o.identity.programId, p.payer, p.salt, p.authorizeUntilSlot) !== order.payment || p.held <= 0n || p.held > p.maximum || p.refundable > p.maximum - p.held) refuse();
   if (reclaimRecovery) {
     const previous = entries.find(e => e.signature === retryAfter)!;
     if (p.held.toString() !== previous.expectedHeld || p.refundable.toString() !== previous.expectedRefundable) refuse();

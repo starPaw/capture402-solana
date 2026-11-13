@@ -1,3 +1,4 @@
+import { runtimeOrderConfig } from "../src/order-runtime.ts";
 // Real HTTP handler failure -> server-signed void, using the accepted Devnet deployment.
 // No fault is injected into the ledger: only the protected handler deliberately throws.
 import { mkdtempSync, writeFileSync } from "node:fs";
@@ -21,7 +22,7 @@ export async function runHandlerFailure(c: Awaited<ReturnType<typeof context>>, 
   const journal = new FileSubmissionJournal(join(outDir, "handler-failure-facilitator-journal"));
   const store = new OperationStore(join(outDir, "handler-failure-operation-store"));
   const bearerToken = crypto.randomUUID();
-  const facilitator = new Facilitator({ network: record.network.caip2, programId: record.programId, feePayer: sponsor, ledger, journal, observationKey: bearerToken });
+  const facilitator = new Facilitator({ ...runtimeOrderConfig(record, server.address, bearerToken), network: record.network.caip2, programId: record.programId, feePayer: sponsor, ledger, journal, observationKey: bearerToken });
   const gateway = createGatewayApp(facilitator, {
     bearerToken,
     sponsorship: new SponsorshipGuard({ ledger, feePayer: sponsor.address, maxAttempts: 2, minLamportsBalance: 10_000_000n }),
@@ -35,6 +36,7 @@ export async function runHandlerFailure(c: Awaited<ReturnType<typeof context>>, 
     const resource = createResourceApp({
       facilitatorUrl: `http://127.0.0.1:${(gatewayListener.address() as AddressInfo).port}`,
       bearerToken,
+      orderSigningKey: bearerToken,
       network: record.network.caip2,
       programId: record.programId,
       feePayer: sponsor.address,

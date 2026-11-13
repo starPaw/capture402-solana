@@ -8,11 +8,11 @@ The default merchant profile remains mock.
 
 ## Local commands
 
-Use the pinned Rust 1.90.0 toolchain, cargo-build-sbf 2.2.14/platform-tools v1.53,
-Node 24 and existing locked dependencies. Run from this public checkout:
+Use the pinned Rust 1.99.1 toolchain, Agave 4.4.0-rc.1 with cargo-build-sbf 4.6.0/platform-tools v1.58,
+Node 26.13.1 and existing locked dependencies. Run from this public checkout:
 
 ```sh
-cargo-build-sbf --tools-version v1.53 --arch v0 -- --locked --offline
+./scripts/build-sbf.sh --offline
 cargo test --locked --offline --test sac001 --test sac002 --test sac003
 npm --prefix integration run typecheck
 npm --prefix integration run test:recovery:offline
@@ -47,7 +47,7 @@ The focused command also runs existing reclaim offer, crash, race, journal and
 synthetic deployment-identity suites. `sac001`/`sac002`/`sac003` provide on-chain
 authority, deadline, expected-(H,F), liquidity/CPI rollback and contention checks.
 SingIt adds service accounting, original operation-ID/receipt recovery, transport
-roles, budget preservation and byte-preserving v1/v2 journal/runtime checks.
+roles, budget preservation and byte-preserving storage-schema journal/runtime checks for the v2 payment protocol.
 The tests do not replace one another or prove live economic finality.
 
 ## Bind the existing operator route before any live use

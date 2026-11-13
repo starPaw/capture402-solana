@@ -14,7 +14,7 @@ afterAll(async () => { await h.close(); });
 
 test.each(["authorize", "capture"] as const)("a concurrent %s after landing retains the unresolved original signature", async (operation) => {
   const journal = new FileSubmissionJournal(mkdtempSync(join(tmpdir(), "sac006-duplicate-recovery-")));
-  const facilitator = new Facilitator({ network: h.ledger.network, programId: h.facilitator.programId, feePayer: h.facilitatorKey, ledger: h.ledger, journal });
+  const facilitator = new Facilitator({ ...h.orderConfig, network: h.ledger.network, programId: h.facilitator.programId, feePayer: h.facilitatorKey, ledger: h.ledger, journal });
   const body = operation === "authorize"
     ? h.body(authorizePayload(await h.signedAuthorize({ salt: h.newSalt() })))
     : h.body(await h.capture(await h.authorized(), 30n, false, 100n, 0n));

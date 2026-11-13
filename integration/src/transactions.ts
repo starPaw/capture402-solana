@@ -68,11 +68,12 @@ export async function authorizeInstruction(a: {
   mint: Address;
   funder: Address;
   salt: Uint8Array;
+  authorizeUntilSlot: bigint;
   maximum: bigint;
   captureDeadline: bigint;
   refundDeadline: bigint;
 }): Promise<Instruction> {
-  const payment = await paymentAddress(a.programId, a.payer, a.salt);
+  const payment = await paymentAddress(a.programId, a.payer, a.salt, a.authorizeUntilSlot);
   return toInstruction(
     a.programId,
     authorizeAccounts({
@@ -84,7 +85,7 @@ export async function authorizeInstruction(a: {
       vault: await ata(payment, a.mint),
       funder: a.funder,
     }),
-    authorizeData(a.salt, a.maximum, a.captureDeadline, a.refundDeadline),
+    authorizeData(a.salt, a.maximum, a.captureDeadline, a.refundDeadline, a.authorizeUntilSlot),
   );
 }
 

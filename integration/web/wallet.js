@@ -16,6 +16,17 @@ export function assertDemoCompute(before) {
   const microLamports = new DataView(Uint8Array.from(price.data).buffer).getBigUint64(1,true);
   if (units < 10_000 || units > 200_000 || microLamports !== 100_000n) throw new Error('Demo compute limit or price outside fixed sponsor policy.');
 }
+// Reject obsolete payment bytes before crossing the wallet's signing boundary.
+export function assertV2WalletInstruction(before, policy) {
+  const instructions = before.instructions.filter(ix => base58(before.keys[ix.program]) !== 'ComputeBudget111111111111111111111111111111');
+  if (instructions.length !== 1) throw new Error('One v2 payment instruction is required.');
+  const ix = instructions[0], bytes = Uint8Array.from(ix.data), view = new DataView(bytes.buffer);
+  if (policy.programId && base58(before.keys[ix.program]) !== policy.programId) throw new Error('Payment program differs from the configured v2 program.');
+  if (bytes[0] === 1 && bytes.length === 1) return; // Payer-direct reclaim has no version field.
+  if (bytes.length !== 75 || bytes[0] !== 0 || bytes[1] !== 2 || bytes[2] !== 0 || view.getBigUint64(3,true) !== 0n ||
+      view.getBigUint64(43,true) === 0n || view.getBigInt64(51,true) <= 0n || view.getBigInt64(59,true) < view.getBigInt64(51,true) ||
+      view.getBigUint64(67,true) === (1n << 64n)-1n) throw new Error('Only canonical v2 authorization is supported.');
+}
 const registry = new Set();
 const listeners = new Set();
 const notify = () => listeners.forEach(fn => fn());
@@ -137,6 +148,7 @@ export async function walletSign(connection, unsigned, policy = DEVNET_POLICY) {
   if (payerSlot < 0) throw new Error('Connected payer is not a required signer.');
   if (present(before.signatures[payerSlot])) throw new Error('Payer signature must be absent before wallet signing.');
   assertDemoCompute(before);
+  assertV2WalletInstruction(before, policy);
   const [signed] = await (connection.signTransaction ?? connection.wallet.features['solana:signTransaction'].signTransaction)({ account: connection.account, transaction: wire, chain: DEVNET_POLICY.walletChain });
   if (!(signed?.signedTransaction instanceof Uint8Array)) throw new Error('Wallet did not return a signed transaction.');
   const after = transaction(new Uint8Array(signed.signedTransaction));

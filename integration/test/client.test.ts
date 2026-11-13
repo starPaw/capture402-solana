@@ -27,7 +27,7 @@ function offer(over: Partial<PaymentRequirements> = {}, extra: Record<string, un
     payTo: MERCHANT,
     maxTimeoutSeconds: 60,
     ...over,
-    extra: { paymentFlow: "escrow", captureDeadline: 1_120, refundDeadline: 1_720, programId: PROGRAM, feePayer: SPONSOR, ...extra },
+    extra: { protocolVersion:2,authorizeUntilSlot:"1500",orderId:"a".repeat(64),orderProof:"b".repeat(64),paymentFlow: "escrow", captureDeadline: 1_120, refundDeadline: 1_720, programId: PROGRAM, feePayer: SPONSOR, ...extra },
   };
 }
 

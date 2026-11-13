@@ -84,7 +84,7 @@ test('sponsorship includes authorize payment/vault rents and retains reservation
  const f=await fixture(),p=await proof(f.sponsor,f.browser,100n);const sizes:number[]=[];
  const adapter=campaignSponsorship(f.budget,{fee:async()=>5_000n,rent:async(size)=>{sizes.push(size);return 100_000n;},finalized:async()=>null});
  const id=await adapter.reserve(p.tx,'authorize');await adapter.observe(id,p.signature);
- expect(sizes).toEqual([176,165]);expect(f.restart().summary().reserved).toBe(205_000n);
+ expect(sizes).toEqual([216,165]);expect(f.restart().summary().reserved).toBe(205_000n);
  await expect(adapter.reserve(p.tx,'authorize')).rejects.toThrow(/original/);
 });
 test('no cap credit for incoming SOL/refunds and no duplicate charge by two logical ids',async()=>{

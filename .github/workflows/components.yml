@@ -38,16 +38,18 @@ jobs:
           fetch-depth: 1
       - name: Install pinned host Rust and SBF CLI
         run: |
-          rustup toolchain install 1.90.0 --profile minimal --component rustfmt --component clippy
-          curl --fail --location --retry 3 https://github.com/anza-xyz/agave/releases/download/v2.2.14/solana-release-x86_64-unknown-linux-gnu.tar.bz2 --output "$RUNNER_TEMP/solana-release.tar.bz2"
-          echo "b5dadeb39ab7f31062c599ead459b9d809dd9d709365df6cb5943828b7693b36  $RUNNER_TEMP/solana-release.tar.bz2" | sha256sum --check
+          rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+          curl --fail --location --retry 3 https://github.com/anza-xyz/agave/releases/download/v4.4.0-rc.1/solana-release-x86_64-unknown-linux-gnu.tar.bz2 --output "$RUNNER_TEMP/solana-release.tar.bz2"
+          echo "030d5f7d3aa872b5b9c8bae511e59f3aaaba6a4841b806754672f0ae6d98fa83  $RUNNER_TEMP/solana-release.tar.bz2" | sha256sum --check
           tar -xjf "$RUNNER_TEMP/solana-release.tar.bz2" -C "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/solana-release/bin" >> "$GITHUB_PATH"
+          cargo install cargo-build-sbf --version 4.6.0 --locked --root "$RUNNER_TEMP/sbf-tools"
+          echo "$RUNNER_TEMP/sbf-tools/bin" >> "$GITHUB_PATH"
       - name: Build SBF from current source
-        run: cargo-build-sbf --tools-version v1.53 --arch v0 -- --locked
+        run: ./scripts/build-sbf.sh
       - name: Verify program and source guards
         run: |
-          cargo test --locked --test sac001 --test sac002 --test sac003
+          cargo test --locked
           cargo clippy --locked --all-targets -- -D warnings
           bash -n deploy.sh
           python3 -B ops/check_local_paths.py --staged
@@ -86,7 +88,7 @@ jobs:
           fetch-depth: 1
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
-          node-version: '24'
+          node-version-file: '.nvmrc'
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: tested-sbf
@@ -105,8 +107,6 @@ jobs:
         run: |
           npm run typecheck --prefix integration
           npm test --prefix integration
-          # Real custody transfer requires root only on the disposable hosted runner.
-          (cd integration && sudo env PATH="$PATH" node node_modules/vitest/vitest.mjs run test/isolation-custody.test.ts)
           npm run build:wallet --prefix integration
           # Signed-wire operator fixtures need the installed Solana packages.
           python3 -B -m unittest discover -s ops -p 'test_*.py' -v

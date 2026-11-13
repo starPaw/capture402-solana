@@ -22,7 +22,7 @@ D = Path('/etc/capture402-e2e')
 S = Path('/var/lib/capture402-e2e/setup')
 P = Path('/root/capture402-b1-package')
 OUT = Path('/root/b1-results.json')
-NODE = '/opt/node-v24.20.0-linux-arm64/bin/node'
+NODE = '/opt/node-v26.13.1-linux-arm64/bin/node'
 OLD = ['/etc/sac006', '/var/lib/sac006', '/opt/capture402', '/opt/capture402-legacy',
        '/etc/capture402-dev', '/var/lib/capture402-dev', '/opt/capture402-dev', '/home/capture402-dev']
 TESTS = []

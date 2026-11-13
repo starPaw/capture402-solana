@@ -1,3 +1,4 @@
+import { runtimeOrderConfig } from "./order-runtime.ts";
 import { selectedPaymentProfile, CIRCLE_PROFILE, circleApproval, circleNamespacePrefix, requireCircleRpc, requireProfileForTreasury } from './payment-profile.ts';
 import { circleCustodyGuard } from './circle-custody.ts';
 import { operationalValue } from './operational-data.ts';
@@ -71,7 +72,7 @@ export async function startFacilitator(): Promise<void> {
     sponsorBudget = campaignSponsorship(campaignBudget,rpcBackend(record,rpcUrl));
     admission = new AdmissionJournal(requireEnv('SAC006_E2E_RELAY_ADMISSION_DIR'),'relay-attempts',Number(requireEnv('SAC006_SPONSOR_MAX_ATTEMPTS')),loadAdmissionContract('relay-attempts',circle?'circle-usdc-v1':undefined));
   }
-  const facilitator = new Facilitator({ network: record.network.caip2, programId: record.programId, feePayer, ledger, journal, sponsorBudget, observationKey: requireEnv("SAC006_BEARER_TOKEN"), ...demoSponsorComputeBounds() });
+  const facilitator = new Facilitator({ ...runtimeOrderConfig(record, requireEnv("SAC006_ALLOWLIST_MERCHANT") as Address), network: record.network.caip2, programId: record.programId, feePayer, ledger, journal, sponsorBudget, observationKey: requireEnv("SAC006_BEARER_TOKEN"), ...demoSponsorComputeBounds() });
   const sponsorship = new SponsorshipGuard({
     ledger,
     feePayer: feePayer.address,

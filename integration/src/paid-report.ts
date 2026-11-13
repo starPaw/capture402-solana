@@ -37,9 +37,10 @@ const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 
 /** Fixed serialization: changing it changes the existing salt commitment, not the ABI. */
 export function reportManifest(id: string, origin: string, request: ReportRequest, payer: string, requirements: PaymentRequirements): string {
-  return JSON.stringify(["capture402-report-v1", id, "POST", `${origin}/resource`, JSON.stringify(request), payer,
+  return JSON.stringify(["capture402-report-v2", id, "POST", `${origin}/resource`, JSON.stringify(request), payer,
     requirements.network, requirements.extra!.programId, requirements.payTo, requirements.asset, requirements.amount,
-    requirements.extra!.captureDeadline, requirements.extra!.refundDeadline, requirements.extra!.feePayer, requirements.maxTimeoutSeconds]);
+    requirements.extra!.captureDeadline, requirements.extra!.refundDeadline, requirements.extra!.feePayer, requirements.maxTimeoutSeconds,
+    requirements.extra!.protocolVersion, requirements.extra!.authorizeUntilSlot, requirements.extra!.orderId, requirements.extra!.orderProof]);
 }
 export function parseReportRequest(input: unknown): ReportRequest {
   if (!isObject(input) || Object.keys(input).join() !== "region" || !["all", "eu", "us"].includes(input.region as string)) {
@@ -102,7 +103,7 @@ export function createPaidReportApp(config: PaidReportConfig): Hono {
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("invalid report ID");
     const record = config.store.read(id);
     const order = record?.paidReport;
-    if (!record || !order || order.schema !== 1 || order.id !== id || record.resource !== "/resource" ||
+    if (!record || !order || order.required?.accepts?.[0]?.extra?.protocolVersion !== 2 || order.schema !== 1 || order.id !== id || record.resource !== "/resource" ||
         !timingSafeEqual(Buffer.from(hash(capability(ctx)), "hex"), Buffer.from(order.capabilityHash, "hex"))) {
       throw new Error("report capability differs");
     }
@@ -154,15 +155,15 @@ export function createPaidReportApp(config: PaidReportConfig): Hono {
       return quote(ctx, order);
     }
     if (!ready()) return ctx.json({ error: "original report unfinished; new economics stopped" }, 409);
-    const offer = await freshRequirements(config);
+    const offer = await freshRequirements(config, id);
     const manifest = reportManifest(id, config.origin, request, payer, offer);
     const salt = Buffer.from(hash(manifest), "hex");
-    const payment = await paymentAddress(config.programId, payer, salt);
-    const terms: ReportTerms = { payer, payment, salt: salt.toString("hex"), maximum: config.amount.toString(),
+    const payment = await paymentAddress(config.programId, payer, salt, BigInt(offer.extra!.authorizeUntilSlot as string));
+    const terms: ReportTerms = { payer, payment, authorizeUntilSlot: String(offer.extra!.authorizeUntilSlot), rentRefundRecipient: config.feePayer, salt: salt.toString("hex"), maximum: config.amount.toString(),
       captureDeadline: String(offer.extra!.captureDeadline), refundDeadline: String(offer.extra!.refundDeadline) };
     const lifetime = await config.getLatestBlockhash();
     const instruction = await authorizeInstruction({ programId: config.programId, funder: config.feePayer, payer,
-      server: config.server.address, mint: config.asset, salt, maximum: config.amount,
+      server: config.server.address, mint: config.asset, salt, authorizeUntilSlot: BigInt(offer.extra!.authorizeUntilSlot as string), maximum: config.amount,
       captureDeadline: BigInt(terms.captureDeadline), refundDeadline: BigInt(terms.refundDeadline) });
     const tx = await buildTransaction({ feePayer: config.feePayer, instructions: [instruction], signers: [], lifetime });
     const order: PaidReportOrder = { schema: 1, id, capabilityHash: hash(cookie), requestBody: JSON.stringify(request), manifest,

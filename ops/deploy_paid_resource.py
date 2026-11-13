@@ -47,6 +47,7 @@ GENESIS = 'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG'
 PROGRAM = deployment_config.optional('programId')
 PROGRAM_DATA = deployment_config.optional('programData')
 PREKEY_SOURCE = deployment_config.optional('paidPrekeySource')
+NODE_VERSION = '26.13.1'
 
 
 def run(*args, **kwargs):
@@ -86,7 +87,7 @@ def empty_staging():
 
 
 def node_source():
-    """Select the installed Node 24 before staging; do not assume /usr/bin/node."""
+    """Select the qualified installed Node before staging; never upgrade it here."""
     for candidate in (Path('/usr/local/bin/node'), Path('/usr/bin/node')):
         if not candidate.exists():
             continue
@@ -96,9 +97,9 @@ def node_source():
                        and not info.st_mode & 0o022, 'unsafe installed Node executable')
         source.require(re.fullmatch(r'/[A-Za-z0-9_./-]+', str(path)), 'unsupported Node path')
         version = run(str(path), '--version')
-        source.require(re.fullmatch(r'v24\.[0-9]+\.[0-9]+', version), 'installed Node 24 required')
+        source.require(version == 'v' + NODE_VERSION, f'installed Node {NODE_VERSION} required')
         return path, version
-    raise RuntimeError('installed Node 24 not found; no staging performed')
+    raise RuntimeError(f'installed Node {NODE_VERSION} not found; no staging performed')
 
 
 def seal_node(path, version):

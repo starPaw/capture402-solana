@@ -5,6 +5,8 @@ repo=$(realpath "${1:-$(dirname "$0")/..}")
 test -f "$repo/integration/package-lock.json"
 cd "$repo"
 ./scripts/test-sac003.sh
+./scripts/test-v2.sh
 npm run typecheck --prefix integration
 npm run build:wallet --prefix integration
 npm test --prefix integration
+npm run test:agave --prefix integration

@@ -62,6 +62,8 @@ import {
 } from "./types.ts";
 
 import { relayProvenance, type OriginReader } from "./lifetime-provenance.ts";
+import { validOrderTerms } from "./order-terms.ts";
+import { V2OrderJournal, type V2OrderLease, type V2OrderRequest } from "./v2-order-journal.ts";
 
 export const COMPUTE_BUDGET_PROGRAM_ADDRESS = "ComputeBudget111111111111111111111111111111" as Address;
 
@@ -86,6 +88,8 @@ export type FacilitatorConfig = {
   sponsorBudget?: SponsorBudget;
   /** Existing trusted-caller bearer key; authenticates recording only, never economic consent. */
   observationKey?: string;
+  orderKey?: string;
+  orderJournal?: V2OrderJournal;
 };
 
 class Rejection extends Error {
@@ -107,6 +111,7 @@ function reject(reason: ReasonCode, detail: string, payer?: string): never {
 
 /** Everything `/settle` needs after a successful preflight. */
 type Verified = {
+  orderRequest?: V2OrderRequest;
   transaction: Transaction;
   payer: Address;
   result: OperationResult;
@@ -115,6 +120,9 @@ type Verified = {
 };
 
 type Terms = {
+  authorizeUntilSlot: bigint;
+  orderId: string;
+  orderAuthenticated: boolean;
   maximum: bigint;
   asset: Address;
   payTo: Address;
@@ -176,6 +184,8 @@ export class Facilitator {
   private readonly journal?: SubmissionJournal;
   private readonly sponsorBudget?: SponsorBudget;
   private readonly observationKey?: string;
+  private readonly orderKey?: string;
+  private readonly orderJournal?: V2OrderJournal;
   /**
    * Settlements in flight in this process, keyed by the exact message bytes of the validated
    * transaction. A concurrent identical `/settle` must not submit twice for one economic event;
@@ -197,6 +207,8 @@ export class Facilitator {
     this.journal = config.journal;
     this.sponsorBudget = config.sponsorBudget;
     this.observationKey = config.observationKey;
+    this.orderKey = config.orderKey;
+    this.orderJournal = config.orderJournal;
   }
 
   get feePayerAddress(): Address {
@@ -226,6 +238,7 @@ export class Facilitator {
    * application error, because no x402 pending receipt can be authenticated in that case.
    */
   async settle(body: unknown): Promise<SettleResponse> {
+    try { body = structuredClone(body); } catch { return this.rejectionResponse(new Error("invalid request")); }
     try { return await withShared(this.journal?.coordination, async () => { this.journal?.assertAccess?.(); return this.settleCoordinated(body); }); }
     catch (e) {
       if (e instanceof SettlementUnknown) throw e;
@@ -285,6 +298,7 @@ export class Facilitator {
 
   /** Validates once, then co-signs as fee payer, submits, and reports the finalized outcome. */
   private async checkAndBroadcast(body: unknown): Promise<SettleResponse> {
+    const original = this.checkRequest(body);
     // Consult durable evidence before state preflight: changed state or an expired deadline
     // cannot classify an earlier broadcast as rejected. Never return a second success either.
     const key = messageKey(body);
@@ -304,6 +318,11 @@ export class Facilitator {
         throw new SettlementUnknown("original submission journal unavailable or untrusted; reconciliation required");
       }
     }
+    if (original.scheme.type === undefined && original.terms.orderAuthenticated && this.orderJournal) {
+      try {
+        if (this.orderJournal.hasReservation(original.terms.orderId)) throw Error("existing business order");
+      } catch { throw new SettlementUnknown("original business order reserved or unavailable; retain its journal"); }
+    }
     let verified: Verified;
     try {
       verified = await this.check(body);
@@ -315,12 +334,35 @@ export class Facilitator {
 
   /** Co-signs as fee payer, submits once, and maps the adapter's three-way outcome. */
   private async broadcast(verified: Verified, observation: unknown): Promise<SettleResponse> {
+    let orderLease: V2OrderLease | undefined;
+    if (verified.result.operation === "authorize") {
+      if (!this.orderJournal || !verified.orderRequest) throw new SettlementUnknown("durable business-order journal required");
+      try {
+        const pinned = this.orderJournal.enrollment.binding;
+        if (pinned.network !== this.network || pinned.programId !== this.programId) throw Error("order journal identity mismatch");
+        const claim = this.orderJournal.claim(verified.orderRequest);
+        if (claim.kind === "existing") throw new SettlementUnknown("original business order already reserved; no new authorization");
+        orderLease = claim.lease;
+        this.orderJournal.assertSigning(orderLease);
+      } catch { throw new SettlementUnknown("original business order unavailable or reserved; retain UNKNOWN"); }
+    }
     let budgetId: string | undefined;
     try { budgetId = await this.sponsorBudget?.reserve(verified.transaction, verified.result.operation); }
     catch { return {success:false,errorReason:Reason.settlementNotSubmitted,transaction:'',network:this.network,payer:verified.payer}; }
-    const signed = await partiallySignTransaction([this.feePayer.keyPair], verified.transaction);
+    let signed: Transaction;
+    try {
+      if (orderLease) this.orderJournal!.assertSigning(orderLease);
+      signed = await partiallySignTransaction([this.feePayer.keyPair], verified.transaction);
+    } catch (error) {
+      if (orderLease) { this.orderJournal!.block(orderLease); throw new SettlementUnknown("original order signing interrupted; retain UNKNOWN"); }
+      throw error;
+    }
     const signature = getSignatureFromTransaction(signed);
     const base = { transaction: signature, network: this.network, payer: verified.payer };
+    if (orderLease) {
+      try { this.orderJournal!.signed(orderLease, { signature, transactionBase64: getBase64EncodedWireTransaction(signed) }); }
+      catch { this.orderJournal!.block(orderLease); throw new SettlementUnknown("original signed authorization cannot be persisted"); }
+    }
     if (this.journal) {
       const reader = "verifyBlockhashOrigin" in this.ledger ? this.ledger as Ledger & OriginReader : undefined;
       const lifetimeProvenance = await relayProvenance(signed, observation, this.network, reader, this.observationKey);
@@ -339,12 +381,17 @@ export class Facilitator {
         });
       } catch (e) {
         if (e instanceof SubmissionAlreadyReserved) return { success: false, errorReason: Reason.settlementPending, ...base };
+        if (orderLease) { this.orderJournal!.block(orderLease); throw new SettlementUnknown("original authorization journal unavailable; retain UNKNOWN"); }
         // Nothing was broadcast: without a durable pre-broadcast record the bytes never leave.
         console.error(`submission journal write failed for ${signature}; not broadcasting:`, e);
         return { success: false, errorReason: Reason.settlementNotSubmitted, transaction: "", network: this.network, payer: verified.payer };
       }
     }
     let outcome: SubmitResult;
+    if (orderLease) {
+      try { this.orderJournal!.dispatch(orderLease); this.orderJournal!.assertDispatch(orderLease); }
+      catch { this.orderJournal!.block(orderLease); throw new SettlementUnknown("original authorization dispatch remains blocked"); }
+    }
     try {
       outcome = await this.ledger.submit(signed);
     } catch (e) {
@@ -358,11 +405,20 @@ export class Facilitator {
     const { result, detail } = submissionOutcome(outcome);
     this.recordOutcome(signature, result, detail);
     // The adapter established the exact bytes were never broadcast: a non-pending failure with
-    // an empty transaction. A retry of the same bytes is fresh, not a second movement.
+    // an empty transaction. The permanent order reservation still forbids another authorization.
     if (result === "not-submitted") {
       return { success: false, errorReason: Reason.settlementNotSubmitted, transaction: "", network: this.network, ...(verified.payer ? { payer: verified.payer } : {}) };
     }
     if (result === "finalized-succeeded") {
+      if (orderLease) {
+        try {
+          const reader = this.ledger as Ledger & { getFinalizedTransaction?: (signature: string) => Promise<{ kind: string; slot?: bigint; transactionBase64?: string }> };
+          const proof = await reader.getFinalizedTransaction?.(signature);
+          if (proof?.kind !== "ok" || typeof proof.slot !== "bigint" || proof.transactionBase64 !== getBase64EncodedWireTransaction(signed)) throw Error("original finalized wire unavailable");
+          this.orderJournal!.observe(orderLease, { status: "AUTHORIZED", signature, commitment: "finalized",
+            evidence: { slot: proof.slot.toString(), transactionBase64: proof.transactionBase64, errorJson: null } });
+        } catch { this.orderJournal!.block(orderLease); return { success: false, errorReason: Reason.settlementPending, ...base }; }
+      }
       // A void settles nothing to the server: omit the generic `amount` and keep the released
       // hold only in the extension result, so generic consumers never read it as revenue.
       return {
@@ -441,7 +497,11 @@ export class Facilitator {
     const captureDeadline = parseDeadline(extra.captureDeadline, "captureDeadline");
     const refundDeadline = parseDeadline(extra.refundDeadline, "refundDeadline");
     if (captureDeadline > refundDeadline) reject(Reason.deadlineOrdering, "captureDeadline must not exceed refundDeadline");
-    return { maximum, asset, payTo, captureDeadline, refundDeadline };
+    if (extra.protocolVersion !== 2 || typeof extra.orderId !== "string" || !/^[a-f0-9]{64}$/.test(extra.orderId)) reject(Reason.invalidRequirements, "only v2 business orders are supported");
+    const authorizeUntilSlot = parseU64(extra.authorizeUntilSlot, Reason.invalidRequirements, "authorizeUntilSlot");
+    if (authorizeUntilSlot === U64_MAX) reject(Reason.invalidRequirements, "authorization expiry needs a successor slot");
+    return { maximum, asset, payTo, captureDeadline, refundDeadline, authorizeUntilSlot, orderId: extra.orderId,
+      orderAuthenticated: validOrderTerms(r, this.orderKey) };
   }
 
   /**
@@ -460,6 +520,7 @@ export class Facilitator {
       throw e;
     }
     const same =
+      t.authorizeUntilSlot === terms.authorizeUntilSlot && t.orderId === terms.orderId && a.extra!.orderProof === r.extra!.orderProof &&
       a.maxTimeoutSeconds === r.maxTimeoutSeconds &&
       t.maximum === terms.maximum &&
       t.asset === terms.asset &&
@@ -472,7 +533,7 @@ export class Facilitator {
   private async checkAsset(asset: Address): Promise<void> {
     const mint = await this.ledger.getAccount(asset);
     if (!mint) reject(Reason.unsupportedAsset, "asset mint does not exist");
-    // Only the fixed classic Token Program; Token-2022 and other owners are unsupported in v1.
+    // Only the fixed classic Token Program; Token-2022 and other owners are unsupported in v2.
     if (mint.owner !== TOKEN_PROGRAM_ADDRESS) reject(Reason.unsupportedAsset, "asset must be a classic SPL Token mint");
     if (mint.data.length !== mintDecoder.fixedSize) reject(Reason.unsupportedAsset, "asset is not a mint");
     if (!mintDecoder.decode(mint.data).isInitialized) reject(Reason.unsupportedAsset, "asset mint is not initialized");
@@ -607,16 +668,18 @@ export class Facilitator {
     if (
       ix.maximum !== terms.maximum ||
       ix.captureDeadline !== terms.captureDeadline ||
-      ix.refundDeadline !== terms.refundDeadline
+      ix.refundDeadline !== terms.refundDeadline || ix.authorizeUntilSlot !== terms.authorizeUntilSlot
     ) {
       reject(Reason.termsMismatch, "signed M, captureDeadline, or refundDeadline differs from the requirements", payer);
     }
     if (payer === terms.payTo) reject(Reason.accounts, "payer and payTo must differ", payer);
+    if (!terms.orderAuthenticated) reject(Reason.termsMismatch, "authorization requires a merchant-issued business order", payer);
+    if (this.orderJournal && terms.payTo !== this.orderJournal.enrollment.binding.merchant) reject(Reason.termsMismatch, "order merchant does not match the enrolled store", payer);
     // The signed server and mint accounts are the payTo and asset terms the program will store.
     if (accounts[1]?.address !== terms.payTo || accounts[3]?.address !== terms.asset) {
       reject(Reason.termsMismatch, "signed payTo or asset differs from the requirements", payer);
     }
-    const payment = await paymentAddress(this.programId, payer, ix.salt);
+    const payment = await paymentAddress(this.programId, payer, ix.salt, ix.authorizeUntilSlot);
     const source = await ata(payer, terms.asset);
     const vault = await ata(payment, terms.asset);
     this.expectAccounts(
@@ -635,6 +698,11 @@ export class Facilitator {
     return {
       transaction,
       payer,
+      orderRequest: { orderId: terms.orderId, payer, mint: terms.asset, rentRefundRecipient: this.feePayer.address,
+        feePayer: this.feePayer.address, payment, salt: Buffer.from(ix.salt).toString("hex"), authorizeUntilSlot: ix.authorizeUntilSlot.toString(),
+        maximum: ix.maximum.toString(), captureDeadline: ix.captureDeadline.toString(), refundDeadline: ix.refundDeadline.toString(),
+        blockhash: messageDecoder.decode(transaction.messageBytes).lifetimeToken, lastValidBlockHeight: null,
+        messageBase64: Buffer.from(transaction.messageBytes).toString("base64") },
       result: { operation: "authorize", payment, amount: terms.maximum.toString(), held: terms.maximum.toString(), refundable: "0" },
       expected: { held: 0n, refundable: 0n },
     };
@@ -677,7 +745,8 @@ export class Facilitator {
       stored.mint !== terms.asset ||
       stored.maximum !== terms.maximum ||
       stored.captureDeadline !== terms.captureDeadline ||
-      stored.refundDeadline !== terms.refundDeadline
+      stored.refundDeadline !== terms.refundDeadline ||
+      stored.authorizeUntilSlot !== terms.authorizeUntilSlot
     ) {
       reject(Reason.termsMismatch, "requirements differ from the stored payment terms (payTo, asset, M, Dc, Dr)", payer);
     }
@@ -772,7 +841,7 @@ export class Facilitator {
     if (!account || account.owner !== this.programId) reject(Reason.paymentNotFound, "payment account is not owned by the pinned program");
     const stored = decodePayment(account.data);
     if (!stored) reject(Reason.paymentNotFound, "payment account data is invalid");
-    if ((await paymentAddress(this.programId, stored.payer, stored.salt)) !== address) {
+    if ((await paymentAddress(this.programId, stored.payer, stored.salt, stored.authorizeUntilSlot)) !== address) {
       reject(Reason.paymentNotFound, "payment account is not the canonical PDA for its stored payer and salt");
     }
     return stored;

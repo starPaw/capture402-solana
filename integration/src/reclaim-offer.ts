@@ -63,7 +63,7 @@ async function paymentProof(o: Options, payment: Address, payer: Address, minimu
   const observed = await b.read(() => o.reader.getAccountAtLeast(payment, minimum));
   if (observed.kind !== "ok" || !slot(observed.slot) || observed.slot < minimum || !observed.account || observed.account.executable !== false || observed.account.owner !== o.identity.programId) refuse();
   const p = decodePayment(observed.account.data);
-  if (!p || p.payer !== payer || p.held <= 0n || await paymentAddress(o.identity.programId, p.payer, p.salt) !== payment) refuse();
+  if (!p || p.payer !== payer || p.held <= 0n || await paymentAddress(o.identity.programId, p.payer, p.salt, p.authorizeUntilSlot) !== payment) refuse();
   const clock = await b.read(() => o.reader.getClockAtLeast(observed.slot, b.deadline));
   if (clock.kind !== "ok" || clock.commitment !== "finalized" || !slot(clock.slot) || clock.slot < observed.slot || typeof clock.unixTimestamp !== "bigint" || clock.unixTimestamp < p.captureDeadline) refuse();
   return { payment: p, data: Buffer.from(observed.account.data).toString("base64"), paymentSlot: observed.slot, clockSlot: clock.slot };

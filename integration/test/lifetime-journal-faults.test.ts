@@ -24,16 +24,17 @@ test.each(["create", "file", "directory"])("%s failure blocks submit with metada
   const h = await createHarness();
   try {
     const journal = new FileSubmissionJournal(mkdtempSync(join(tmpdir(), "relay-fsync-")));
-    const f = () => new Facilitator({ network: h.ledger.network, programId: h.facilitator.programId,
+    const f = () => new Facilitator({ ...h.orderConfig, network: h.ledger.network, programId: h.facilitator.programId,
       feePayer: h.facilitatorKey, ledger: h.ledger, journal, observationKey: "synthetic-key" });
     const tx = await h.signedAuthorize({ salt: h.newSalt() });
     const body = { ...h.body(authorizePayload(tx)), lifetimeObservation: attestObservation(transactionObservation(tx)!, "synthetic-key") };
     const submit = vi.spyOn(h.ledger, "submit"); fault.kind = kind;
-    const result = await f().settle(body); fault.kind = "";
-    expect(result.errorReason).toBe("settlement_not_submitted"); expect(submit).not.toHaveBeenCalled();
-    if (kind !== "create") {
-      expect(journal.list()).toHaveLength(1);
-      expect((await f().settle(body)).errorReason).toBe("settlement_pending"); expect(submit).not.toHaveBeenCalled();
-    }
+    await expect(f().settle(body)).rejects.toThrow(/UNKNOWN|unavailable|reserved/); fault.kind = "";
+    expect(submit).not.toHaveBeenCalled();
+    const orderId=body.paymentRequirements.extra!.orderId as string;
+    expect(h.orderConfig.orderJournal.hasReservation(orderId)).toBe(true);
+    expect(h.orderConfig.orderJournal.snapshot(orderId).status).toBe("UNKNOWN");
+    await expect(f().settle(body)).rejects.toThrow(/reserved|unavailable/);
+    expect(submit).not.toHaveBeenCalled();
   } finally { fault.kind = ""; await h.close(); }
 });

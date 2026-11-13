@@ -1,3 +1,5 @@
+import { initializeV2OrderJournal, V2OrderJournal } from "../src/v2-order-journal.ts";
+import { sealOrderTerms } from "../src/order-terms.ts";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -16,7 +18,9 @@ const GENESIS = "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG";
 const NETWORK = `solana:${GENESIS.slice(0, 32)}`;
 const KEY = "synthetic-existing-bearer-test-key";
 let h: Harness, journal: FileSubmissionJournal, dir: string;
-beforeEach(async () => { h = await createHarness(); dir = mkdtempSync(join(tmpdir(), "relay-provenance-")); journal = new FileSubmissionJournal(dir); });
+beforeEach(async () => { h = await createHarness(); dir = mkdtempSync(join(tmpdir(), "relay-provenance-")); journal = new FileSubmissionJournal(dir);
+  const path=join(dir,"orders-v2"), pin=initializeV2OrderJournal(path,{...h.orderConfig.orderJournal.enrollment.binding,network:NETWORK,genesisHash:GENESIS as any});
+  h.orderConfig.orderJournal=new V2OrderJournal(path,pin); });
 afterEach(async () => { await h.close(); });
 const observation = (tx: Transaction): LifetimeObservation => ({ version: 1, messageHash: messageHash(tx.messageBytes),
   blockhash: h.lifetime().blockhash, lastValidBlockHeight: "18446744073709551615", contextSlot: "9007199254740993",
@@ -24,12 +28,12 @@ const observation = (tx: Transaction): LifetimeObservation => ({ version: 1, mes
 const reader: OriginReader = { verifyBlockhashOrigin: async (blockhash, slot, genesisHash, network) =>
   ({ state: "verified", blockhash, slot: slot.toString(), genesisHash, network, commitment: "finalized" }) };
 function facilitator(originReader: OriginReader = reader) {
-  return new Facilitator({ network: NETWORK, programId: h.facilitator.programId, feePayer: h.facilitatorKey, journal, observationKey: KEY,
-    ledger: { network: NETWORK, now: () => h.ledger.now(), getAccount: a => h.ledger.getAccount(a), simulate: t => h.ledger.simulate(t),
-      submit: t => h.ledger.submit(t), ...originReader } });
+  return new Facilitator({ ...h.orderConfig, network: NETWORK, programId: h.facilitator.programId, feePayer: h.facilitatorKey, journal, observationKey: KEY,
+    ledger: Object.assign(Object.create(h.ledger), { network: NETWORK, now: () => h.ledger.now(), getAccount: (a:any) => h.ledger.getAccount(a), simulate: (t:Transaction) => h.ledger.simulate(t),
+      submit: (t:Transaction) => h.ledger.submit(t), ...originReader }) });
 }
 function body(payload: Record<string, unknown>, transport?: unknown) {
-  const req = { ...h.requirements(), network: NETWORK };
+  const req = sealOrderTerms({ ...h.requirements(), network: NETWORK },h.orderConfig.orderKey);
   return { x402Version: 2, paymentPayload: { x402Version: 2, accepted: req, payload }, paymentRequirements: req, lifetimeObservation: transport };
 }
 
@@ -101,7 +105,7 @@ test.each(["message", "blockhash", "borrowed-order", "borrowed-payer", "borrowed
     instructions: [await reclaimInstruction({ programId: h.facilitator.programId, payment: await h.paymentFor(h.newSalt()),
       payer: h.payer.address, server: h.server.address, mint: h.mint })] });
   if (field === "borrowed-payer") other = await buildTransaction({ feePayer: h.facilitatorKey.address, signers: [h.outsider], lifetime: h.lifetime(),
-    instructions: [await authorizeInstruction({ programId: h.facilitator.programId, payer: h.outsider.address, server: h.server.address,
+    instructions: [await authorizeInstruction({ authorizeUntilSlot: 1500n, programId: h.facilitator.programId, payer: h.outsider.address, server: h.server.address,
       mint: h.mint, funder: h.facilitatorKey.address, salt: h.newSalt(), maximum: 100n, captureDeadline: 1100n, refundDeadline: 1200n })] });
   const value = observation(field.startsWith("borrowed") ? other : tx);
   if (field === "message") value.messageHash = "a".repeat(64);
@@ -134,7 +138,7 @@ test("missing metadata stays explicit; no fresh lifetime is fetched", async () =
 });
 
 test("recording copies scalars and does not infer context from legacy blockhashSlot", async () => {
-  const tx = await h.signedAuthorize({ salt: h.newSalt() }); const lifetime = { ...h.lifetime(), blockhashSlot: 10n };
+  const tx = await h.signedAuthorize({ salt: h.newSalt() }); const lifetime = { ...h.lifetime(), contextSlot: undefined, blockhashSlot: 10n };
   retainObservation(tx, lifetime); lifetime.lastValidBlockHeight = 12n;
   expect(transactionObservation(tx)!.lastValidBlockHeight).toBe("1000000");
   expect(transactionObservation(tx)!.contextSlot).toBeNull();

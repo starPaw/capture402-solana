@@ -23,3 +23,8 @@ export { requireSponsorshipBudget, SponsorshipGuard, type SponsorshipGuardConfig
 export * from "./submission-journal.ts";
 export * from "./transactions.ts";
 export * from "./types.ts";
+export * from "./v2-order-authorizer.ts";
+export * from "./v2-order-journal.ts";
+export * from "./v2-order-rpc.ts";
+export * from "./lifecycle.ts";
+export * from "./order-terms.ts";

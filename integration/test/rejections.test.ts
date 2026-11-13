@@ -92,11 +92,11 @@ describe("profile and requirements", () => {
     const drift = h.body(payload);
     drift.paymentPayload.accepted = h.requirements({}, { assetTransferMethod: "permit2" });
     await rejected(drift, Reason.acceptedMismatch, payment);
-    // The same profile written differently (string deadline, implicit escrow flow) is equal.
+    // Changing authenticated v2 offer fields is refused even if legacy normalization was equivalent.
     const normalized = h.body(payload);
     const { paymentFlow: _, ...implicit } = h.requirements({}, { captureDeadline: DC.toString() }).extra!;
     normalized.paymentPayload.accepted = { ...h.requirements(), extra: implicit };
-    expect((await h.post("/verify", normalized)).json).toMatchObject({ isValid: true });
+    expect((await h.post("/verify", normalized)).json).toMatchObject({ isValid: false });
   });
 
   test("wrapped SOL and Token-2022 assets are unsupported", async () => {
@@ -184,7 +184,8 @@ describe("authorize terms and transaction", () => {
     const payload = authorizePayload(await h.signedAuthorize({ salt }));
     expect((await h.post("/settle", h.body(payload))).json).toMatchObject({ success: true });
     // Resending the identical authorization never collects again.
-    await rejected(h.body(payload), Reason.paymentExists, payment);
+    const repeated=await h.post("/settle",h.body(payload));
+    expect(repeated.status).toBe(503);expect(repeated.json.error).toBe("settlement_unknown");
 
     const fresh = h.newSalt();
     h.setTime(DC);

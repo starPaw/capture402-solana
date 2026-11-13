@@ -1,4 +1,6 @@
 import { withShared } from "./coordination.ts";
+import { randomBytes } from "node:crypto";
+import { businessOrderKey, sealOrderTerms, validOrderTerms } from "./order-terms.ts";
 // Demo protected resource server (SAC-006 gap #2): the actual x402 v2 HTTP escrow flow
 // (`http-transport.ts`): `402 + PAYMENT-REQUIRED → PAYMENT-SIGNATURE (PaymentPayload) →
 // settle(authorize) → handler → settle(capture|capture+void|void) → PAYMENT-RESPONSE`, calling a
@@ -8,8 +10,8 @@ import { withShared } from "./coordination.ts";
 //
 // Resource-replay binding (SAC-006 gap #3): before the handler ever runs, this server verifies
 // the payer's signature on the client's authorize transaction (that signature *is* this demo's
-// caller authentication — there is no separate login), derives the caller/resource/payment
-// fingerprint from it, and reserves it in the `OperationStore`. A conflicting reuse is rejected
+// caller authentication — there is no separate login), verifies the merchant-authenticated
+// business order key, and reserves it in the `OperationStore`. A conflicting reuse is rejected
 // before the handler runs, so a duplicate or replayed request executes the handler at most once.
 // A rejected or unresolved authorize never starts the handler. A handler failure takes the void
 // path; a refused or unresolved terminal settle never becomes a completed-payment response.
@@ -39,7 +41,7 @@ import {
   type PaymentRequired,
   parsePaymentPayload,
 } from "./http-transport.ts";
-import { fingerprint, type OperationRecord, OperationStore, type PreSubmission, ReservationConflict } from "./operation-store.ts";
+import { type OperationRecord, OperationStore, type PreSubmission, ReservationConflict } from "./operation-store.ts";
 import { decodeInstructionData, paymentAddress } from "./program.ts";
 import { buildTransaction, captureInstruction, capturePayload, type Lifetime, voidInstruction, voidPayload } from "./transactions.ts";
 import { EXTRA_KEYS, isObject, type PaymentPayload, type PaymentRequirements, Reason, type ReasonCode, SETTLEMENT_UNKNOWN, type SettleResponse } from "./types.ts";
@@ -54,6 +56,7 @@ export type HandlerResult = { ok: true; amount: bigint; releaseRemainder: boolea
 export type ResourceServerConfig = {
   facilitatorUrl: string;
   bearerToken: string;
+  orderSigningKey: string;
   network: string;
   programId: Address;
   /** Facilitator's sponsor address; advertised in `extra.feePayer` so the client signs for it. */
@@ -144,8 +147,8 @@ const GATEWAY_REFUSALS: ReadonlySet<number> = new Set([401, 403, 429]);
 
 const timeout = (config: ResourceServerConfig) => config.maxTimeoutSeconds ?? 60;
 
-function requirements(config: ResourceServerConfig, captureDeadline: bigint, refundDeadline: bigint): PaymentRequirements {
-  return {
+function requirements(config: ResourceServerConfig, captureDeadline: bigint, refundDeadline: bigint, orderId: string, authorizeUntilSlot: string): PaymentRequirements {
+  return sealOrderTerms({
     scheme: "auth-capture",
     network: config.network,
     amount: config.amount.toString(),
@@ -153,19 +156,25 @@ function requirements(config: ResourceServerConfig, captureDeadline: bigint, ref
     payTo: config.server.address,
     maxTimeoutSeconds: timeout(config),
     extra: {
+      protocolVersion: 2,
+      orderId,
+      authorizeUntilSlot,
       paymentFlow: "escrow",
       captureDeadline: Number(captureDeadline),
       refundDeadline: Number(refundDeadline),
       programId: config.programId,
       feePayer: config.feePayer,
     },
-  };
+  }, config.orderSigningKey);
 }
 
-export async function freshRequirements(config: ResourceServerConfig): Promise<PaymentRequirements> {
+export async function freshRequirements(config: ResourceServerConfig, businessId = randomBytes(32).toString("hex")): Promise<PaymentRequirements> {
   const now = BigInt(await config.now());
   const captureDeadline = now + BigInt(config.captureDeadlineSeconds);
-  return requirements(config, captureDeadline, captureDeadline + BigInt(config.refundDeadlineSeconds));
+  const lifetime = await config.getLatestBlockhash(), slot = lifetime.contextSlot ?? lifetime.blockhashSlot;
+  if (typeof slot !== "bigint" || slot < 0n || slot + 1500n >= (1n << 64n) - 1n) throw Error("verified chain slot required for v2 offer");
+  return requirements(config, captureDeadline, captureDeadline + BigInt(config.refundDeadlineSeconds),
+    businessOrderKey(config.server.address, businessId), (slot + 1500n).toString());
 }
 
 function paymentRequired(config: ResourceServerConfig, resourceUrl: string, offer: PaymentRequirements, error: string): PaymentRequired {
@@ -179,8 +188,8 @@ function paymentRequired(config: ResourceServerConfig, resourceUrl: string, offe
 
 /**
  * The client's `accepted` must be exactly an offer this server makes: every field equal to this
- * server's configuration, and deadlines it issued no more than `maxTimeoutSeconds` ago (the
- * deadlines are the only per-challenge values). Without the freshness bound a client could pick
+ * server's configuration, with authenticated order/expiry terms and deadlines it issued no
+ * more than `maxTimeoutSeconds` ago. Without the freshness bound a client could pick
  * a capture deadline too short for the terminal settle to land after the handler runs.
  */
 export async function acceptedDeadlines(config: ResourceServerConfig, accepted: unknown): Promise<{ captureDeadline: bigint; refundDeadline: bigint } | string> {
@@ -191,7 +200,8 @@ export async function acceptedDeadlines(config: ResourceServerConfig, accepted: 
   if (!Number.isSafeInteger(dc) || !Number.isSafeInteger(dr)) return "accepted deadlines must be integers";
   const captureDeadline = BigInt(dc as number);
   const refundDeadline = BigInt(dr as number);
-  const expected = requirements(config, captureDeadline, refundDeadline);
+  if (!validOrderTerms(accepted as PaymentRequirements, config.orderSigningKey)) return "accepted order was not issued by this service";
+  const expected = requirements(config, captureDeadline, refundDeadline, extra.orderId as string, extra.authorizeUntilSlot as string);
   const sameExtra =
     Object.keys(extra).sort().join(",") === EXTRA_KEYS.join(",") &&
     EXTRA_KEYS.every((k) => extra[k] === expected.extra![k]);
@@ -224,7 +234,7 @@ function decodeTransaction(transactionBase64: string): Transaction {
 export async function peekAuthorize(
   config: ResourceServerConfig,
   transaction: Transaction,
-): Promise<{ payer: Address; salt: Uint8Array; maximum: bigint; captureDeadline: bigint; refundDeadline: bigint; blockhash: string }> {
+): Promise<{ payer: Address; salt: Uint8Array; maximum: bigint; captureDeadline: bigint; refundDeadline: bigint; authorizeUntilSlot: bigint; blockhash: string }> {
   const message = messageDecoder.decode(transaction.messageBytes);
   if (message.version !== "legacy") throw new Error("only legacy transactions are accepted");
   if (message.staticAccounts[0] !== config.feePayer) throw new Error("fee payer must be the advertised sponsor");
@@ -238,7 +248,7 @@ export async function peekAuthorize(
   if (ixs.length !== 1) throw new Error("exactly one auth-capture instruction is required");
   const decoded = decodeInstructionData(new Uint8Array(ixs[0]!.data ?? []));
   if (!decoded || decoded.op !== "authorize") throw new Error("payload must carry the authorize instruction");
-  return { payer, salt: decoded.salt, maximum: decoded.maximum, captureDeadline: decoded.captureDeadline, refundDeadline: decoded.refundDeadline, blockhash: message.lifetimeToken };
+  return { payer, salt: decoded.salt, maximum: decoded.maximum, captureDeadline: decoded.captureDeadline, refundDeadline: decoded.refundDeadline, authorizeUntilSlot: decoded.authorizeUntilSlot, blockhash: message.lifetimeToken };
 }
 
 function facilitatorBody(paymentPayload: PaymentPayload, paymentRequirements: PaymentRequirements) {
@@ -350,13 +360,13 @@ export function createResourceApp(config: ResourceServerConfig): Hono {
     }
     const deadlines = await acceptedDeadlines(config, paymentPayload.accepted);
     if (typeof deadlines === "string") return challenge(deadlines);
-    if (signed.maximum !== config.amount || signed.captureDeadline !== deadlines.captureDeadline || signed.refundDeadline !== deadlines.refundDeadline) {
+    if (signed.maximum !== config.amount || signed.captureDeadline !== deadlines.captureDeadline || signed.refundDeadline !== deadlines.refundDeadline || signed.authorizeUntilSlot.toString() !== paymentPayload.accepted.extra!.authorizeUntilSlot) {
       return challenge("the signed authorize does not match the accepted offer");
     }
-    const accepted = requirements(config, deadlines.captureDeadline, deadlines.refundDeadline);
+    const accepted = paymentPayload.accepted;
     const { payer } = signed;
-    const payment = await paymentAddress(config.programId, payer, signed.salt);
-    const fp = fingerprint(payer, RESOURCE_PATH, signed.salt);
+    const payment = await paymentAddress(config.programId, payer, signed.salt, signed.authorizeUntilSlot);
+    const fp = accepted.extra!.orderId as string;
 
     try {
       config.store.reserve(fp, payer, RESOURCE_PATH);

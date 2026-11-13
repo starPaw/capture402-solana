@@ -116,16 +116,10 @@ async function locate(
   return { status: search };
 }
 
-/**
- * What the snapshot says about this submission's effect. The payment PDA is never closed in v1,
- * so an absent payment proves no authorize for it ever executed; an existing one proves the
- * identity was authorized (by these bytes or another payer-signed authorize for the same salt).
- * A capture or void always changes a positive hold, so an unchanged expected pair proves it did
- * not execute; a changed pair is not attributed, because payer reclaim also moves it.
- */
+/** Account absence never proves non-execution: v2 Payment accounts can be closed. */
 function paymentEffect(sub: PreSubmission, op: SubmissionEvidence["op"], snapshot?: PaymentSnapshot): "absent" | "present" | "unattributed" {
   if (!snapshot || snapshot.kind !== "ok") return "unattributed";
-  if (op === "authorize") return snapshot.exists ? "present" : "absent";
+  if (op === "authorize") return snapshot.exists ? "present" : "unattributed";
   if (snapshot.exists && snapshot.held === sub.expectedHeld && snapshot.refundable === sub.expectedRefundable) return "absent";
   return "unattributed";
 }

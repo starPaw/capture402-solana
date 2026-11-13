@@ -14,14 +14,14 @@ import { SYSTEM_PROGRAM_ADDRESS } from "@solana-program/system";
 export { TOKEN_PROGRAM_ADDRESS, ASSOCIATED_TOKEN_PROGRAM_ADDRESS, SYSTEM_PROGRAM_ADDRESS };
 
 /** `ID` in `src/lib.rs`: a local harness identity, not a deployment. */
-export const LOCAL_PROGRAM_ID: Address = getAddressDecoder().decode(new Uint8Array(32).fill(42));
+export const LOCAL_PROGRAM_ID: Address = getAddressDecoder().decode(new Uint8Array(32).fill(43));
 export const NATIVE_MINT: Address = "So11111111111111111111111111111111111111112" as Address;
-export const SEED = new TextEncoder().encode("auth-capture-v1");
-export const DISCRIMINATOR = new TextEncoder().encode("SACPAY01");
-export const PAYMENT_LEN = 176;
+export const SEED = new TextEncoder().encode("auth-capture-v2");
+export const DISCRIMINATOR = new TextEncoder().encode("SACPAY02");
+export const PAYMENT_LEN = 216;
 
 export const Tag = { authorize: 0, reclaim: 1, capture: 2, void: 3, refund: 4 } as const;
-export const DATA_LEN = { authorize: 67, reclaim: 1, capture: 26, void: 17, refund: 25 } as const;
+export const DATA_LEN = { authorize: 75, reclaim: 1, capture: 26, void: 17, refund: 25 } as const;
 
 export const U64_MAX = (1n << 64n) - 1n;
 export const I64_MAX = (1n << 63n) - 1n;
@@ -30,6 +30,9 @@ const addresses = getAddressEncoder();
 const addressDecoder = getAddressDecoder();
 
 export type Payment = {
+  protocolVersion: 2;
+  authorizeUntilSlot: bigint;
+  rentRefundRecipient: Address;
   payer: Address;
   server: Address;
   mint: Address;
@@ -46,6 +49,9 @@ export function decodePayment(data: Uint8Array): Payment | null {
   if (data.length !== PAYMENT_LEN || !bytesEqual(data.subarray(0, 8), DISCRIMINATOR)) return null;
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const p: Payment = {
+    protocolVersion: 2,
+    authorizeUntilSlot: view.getBigUint64(176, true),
+    rentRefundRecipient: addressDecoder.decode(data.subarray(184, 216)),
     payer: addressDecoder.decode(data.subarray(8, 40)),
     server: addressDecoder.decode(data.subarray(40, 72)),
     mint: addressDecoder.decode(data.subarray(72, 104)),
@@ -57,6 +63,7 @@ export function decodePayment(data: Uint8Array): Payment | null {
     refundable: view.getBigUint64(168, true),
   };
   if (
+    p.authorizeUntilSlot === U64_MAX ||
     p.payer === p.server ||
     p.maximum === 0n ||
     p.captureDeadline <= 0n ||
@@ -68,10 +75,11 @@ export function decodePayment(data: Uint8Array): Payment | null {
   return p;
 }
 
-export async function paymentAddress(program: Address, payer: Address, salt: Uint8Array): Promise<Address> {
+export async function paymentAddress(program: Address, payer: Address, salt: Uint8Array, authorizeUntilSlot: bigint): Promise<Address> {
+  if (salt.length !== 32 || authorizeUntilSlot === U64_MAX) throw Error("invalid v2 payment identity");
   const [address] = await getProgramDerivedAddress({
     programAddress: program,
-    seeds: [SEED, addresses.encode(payer), salt],
+    seeds: [SEED, addresses.encode(payer), salt, u64(authorizeUntilSlot)],
   });
   return address;
 }
@@ -82,12 +90,14 @@ export async function ata(owner: Address, mint: Address): Promise<Address> {
 }
 
 function u64(value: bigint): Uint8Array {
+  if (typeof value !== "bigint" || value < 0n || value > U64_MAX) throw Error("invalid u64");
   const out = new Uint8Array(8);
   new DataView(out.buffer).setBigUint64(0, value, true);
   return out;
 }
 
 function i64(value: bigint): Uint8Array {
+  if (typeof value !== "bigint" || value < -(1n << 63n) || value > I64_MAX) throw Error("invalid i64");
   const out = new Uint8Array(8);
   new DataView(out.buffer).setBigInt64(0, value, true);
   return out;
@@ -107,9 +117,10 @@ export function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
-/** Wire: authorize=0, version=1, escrow=0, fee=0:u64, salt:32, M:u64, Dc:i64, Dr:i64. */
-export function authorizeData(salt: Uint8Array, maximum: bigint, dc: bigint, dr: bigint): Uint8Array {
-  return concat(Uint8Array.of(Tag.authorize, 1, 0), u64(0n), salt, u64(maximum), i64(dc), i64(dr));
+/** Wire: authorize=0, version=2, escrow=0, fee=0:u64, salt:32, M:u64, Dc:i64, Dr:i64, E:u64. */
+export function authorizeData(salt: Uint8Array, maximum: bigint, dc: bigint, dr: bigint, authorizeUntilSlot: bigint): Uint8Array {
+  if (salt.length !== 32 || authorizeUntilSlot === U64_MAX) throw Error("invalid v2 authorization identity");
+  return concat(Uint8Array.of(Tag.authorize, 2, 0), u64(0n), salt, u64(maximum), i64(dc), i64(dr), u64(authorizeUntilSlot));
 }
 
 /** Wire: capture=2, amount:u64, releaseRemainder:bool(0/1), expectedH:u64, expectedF:u64. */
@@ -128,7 +139,7 @@ export function refundData(amount: bigint, h: bigint, f: bigint): Uint8Array {
 }
 
 export type DecodedInstruction =
-  | { op: "authorize"; salt: Uint8Array; maximum: bigint; captureDeadline: bigint; refundDeadline: bigint }
+  | { op: "authorize"; authorizeUntilSlot: bigint; salt: Uint8Array; maximum: bigint; captureDeadline: bigint; refundDeadline: bigint }
   | { op: "reclaim" }
   | { op: "capture"; amount: bigint; releaseRemainder: boolean; expectedHeld: bigint; expectedRefundable: bigint }
   | { op: "void"; expectedHeld: bigint; expectedRefundable: bigint }
@@ -139,11 +150,12 @@ export function decodeInstructionData(data: Uint8Array): DecodedInstruction | nu
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   switch (data[0]) {
     case Tag.authorize:
-      if (data.length !== DATA_LEN.authorize || data[1] !== 1 || data[2] !== 0 || view.getBigUint64(3, true) !== 0n) {
+      if (data.length !== DATA_LEN.authorize || data[1] !== 2 || data[2] !== 0 || view.getBigUint64(3, true) !== 0n) {
         return null;
       }
       return {
         op: "authorize",
+        authorizeUntilSlot: view.getBigUint64(67, true),
         salt: data.slice(11, 43),
         maximum: view.getBigUint64(43, true),
         captureDeadline: view.getBigInt64(51, true),

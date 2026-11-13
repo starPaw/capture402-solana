@@ -25,7 +25,8 @@ let root: string, orders: string, journal: string, path: string, lockPath: strin
 let order: any, event: any, entry: SubmissionEntry, reader: ChainReader, options: RestaurantReconcileOptions;
 const salt = new Uint8Array(32).fill(7);
 function account(held = 100_000_000n, refundable = 0n) {
-  const data = new Uint8Array(176), addresses = getAddressEncoder(), view = new DataView(data.buffer);
+  const data = new Uint8Array(216), addresses = getAddressEncoder(), view = new DataView(data.buffer);
+  view.setBigUint64(176,1500n,true);data.set(addresses.encode(sponsor.address),184);
   data.set(DISCRIMINATOR); data.set(addresses.encode(payer.address), 8); data.set(addresses.encode(merchant.address), 40);
   data.set(addresses.encode(NATIVE_MINT), 72); data.set(salt, 104);
   view.setBigUint64(136, 100_000_000n, true); view.setBigInt64(144, 1000n, true); view.setBigInt64(152, 1100n, true);
@@ -58,13 +59,13 @@ function found(commitment: "processed" | "confirmed" | "finalized" = "finalized"
 }
 beforeEach(async () => {
   [payer, merchant, sponsor] = await Promise.all([generateKeyPairSigner(), generateKeyPairSigner(), generateKeyPairSigner()]);
-  payment = await paymentAddress(LOCAL_PROGRAM_ID, payer.address, salt);
+  payment = await paymentAddress(LOCAL_PROGRAM_ID, payer.address, salt, 1500n);
   const stored = { programId: LOCAL_PROGRAM_ID, payment, payer: payer.address, server: merchant.address, mint: NATIVE_MINT };
   partial = await buildTransaction({ feePayer: sponsor.address, signers: [merchant],
     instructions: [await captureInstruction(stored, 40_000_000n, false, 100_000_000n, 0n)],
     lifetime: { blockhash: BLOCKHASH as any, lastValidBlockHeight: 10n } });
   signed = await partiallySignTransaction([sponsor.keyPair], partial); signature = getSignatureFromTransaction(signed);
-  const unsigned = await buildTransaction({ feePayer: sponsor.address, signers: [], instructions: [await authorizeInstruction({
+  const unsigned = await buildTransaction({ feePayer: sponsor.address, signers: [], instructions: [await authorizeInstruction({ authorizeUntilSlot: 1500n,
     programId: LOCAL_PROGRAM_ID, payer: payer.address, server: merchant.address, mint: NATIVE_MINT, funder: sponsor.address,
     salt, maximum: 100_000_000n, captureDeadline: 1000n, refundDeadline: 1100n,
   })], lifetime: { blockhash: BLOCKHASH as any, lastValidBlockHeight: 10n } });
@@ -74,7 +75,7 @@ beforeEach(async () => {
   order = { id: ID, status: "pending", payer: payer.address, payment, capabilityHash: PRIVATE, scenario: "normal",
     unsigned: encodeTransaction(unsigned), events: [{ ...event }],
     required: { resource: { url: "https://example.invalid/" + PRIVATE }, accepts: [{
-      network: NETWORK, payTo: merchant.address, asset: NATIVE_MINT, amount: "100000000", extra: { captureDeadline: 1000, refundDeadline: 1100 },
+      network: NETWORK, payTo: merchant.address, asset: NATIVE_MINT, amount: "100000000", extra: { protocolVersion:2, authorizeUntilSlot:"1500", feePayer:sponsor.address, captureDeadline: 1000, refundDeadline: 1100 },
     }] } };
   entry = { signature, transactionBase64: encodeTransaction(signed), messageHash: messageHash(partial.messageBytes), blockhash: BLOCKHASH,
     operation: "capture", payment, payer: payer.address, expectedHeld: "100000000", expectedRefundable: "0",
@@ -283,7 +284,7 @@ describe("restaurant action identities", () => {
     (["succeeded", "failed", "missing", "conflict"] as const).map(result => ({ a, result }))))("$a with $result preserves three-way diagnosis", async ({ a, result }) => {
     const stored = { programId: LOCAL_PROGRAM_ID, payment, payer: payer.address, server: merchant.address, mint: NATIVE_MINT };
     const amount = a === "salmon" ? 25_000_000n : a === "refund" ? 40_000_000n : 100_000_000n;
-    const ix = a === "authorize" ? await authorizeInstruction({ ...stored, funder: sponsor.address, salt, maximum: amount, captureDeadline: 1000n, refundDeadline: 1100n }) :
+    const ix = a === "authorize" ? await authorizeInstruction({ authorizeUntilSlot: 1500n, ...stored, funder: sponsor.address, salt, maximum: amount, captureDeadline: 1000n, refundDeadline: 1100n }) :
       a === "salmon" ? await captureInstruction(stored, amount, false, 100_000_000n, 0n) :
       a === "refund" ? await refundInstruction(stored, amount, 60_000_000n, 40_000_000n) :
       a === "reclaim" ? await reclaimInstruction(stored) : await voidInstruction(stored, amount, 0n);
@@ -373,7 +374,7 @@ describe("definitive reports require consistent finalized evidence", () => {
   });
   test("changing the authorization lifetime cannot substitute consent to the offered message", async () => {
     const changed = await buildTransaction({ feePayer: sponsor.address, signers: [payer, sponsor],
-      instructions: [await authorizeInstruction({ programId: LOCAL_PROGRAM_ID, payer: payer.address, server: merchant.address,
+      instructions: [await authorizeInstruction({ authorizeUntilSlot: 1500n, programId: LOCAL_PROGRAM_ID, payer: payer.address, server: merchant.address,
         mint: NATIVE_MINT, funder: sponsor.address, salt, maximum: 100_000_000n, captureDeadline: 1000n, refundDeadline: 1100n })],
       lifetime: { blockhash: sponsor.address as any, lastValidBlockHeight: 10n } });
     unlinkSync(lockPath); lockPath = path + ".authorize.lock";

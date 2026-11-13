@@ -6,8 +6,6 @@ import { mkdtempSync, readdirSync, readFileSync, writeFileSync,renameSync,exists
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from 'node:crypto';
-import { selectedAbandonPolicies } from '../src/authorize-abandon.ts';
-import { EXPIRED_A_POLICY,UNRECORDED_A_POLICY,PENDING_A_ISOLATION } from './fixtures/operational-fixture.ts';
 import { getBase64Encoder, getTransactionDecoder, partiallySignTransaction, getSignatureFromTransaction, getCompiledTransactionMessageDecoder, getBase64EncodedWireTransaction, type Address, signBytes, lamports } from "@solana/kit";
 import { getMintToInstruction, getTransferInstruction } from "@solana-program/token";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
@@ -17,7 +15,6 @@ import { createPresentationApp } from "../src/restaurant-server.js";
 import { OperationStore } from "../src/operation-store.js";
 import { FileSubmissionJournal } from "../src/submission-journal.js";
 import { messageHash } from '../src/submission-journal.ts';
-import { prepareUnknownAuthorizeIsolation,persistUnknownAuthorizeIsolation,authorizeIsolationEvidence,type IsolationPolicy } from '../src/unknown-authorize-isolation.ts';
 import { createDurableFile } from "../src/durable-file.js";
 import { encodeTransaction, reclaimInstruction, refundInstruction } from "../src/transactions.js";
 import { decodeHeader, encodeHeader, type PaymentRequired } from "../src/http-transport.js";
@@ -40,7 +37,7 @@ beforeEach(async () => {
     },
     getAccountAtLeast: async (address: Address) => ({ kind: "ok" as const, slot: 1n, account: await h.ledger.getAccount(address) }),
   });
-  c = { merchantToken, facilitatorUrl: h.url, bearerToken: "local-only-test", network: h.ledger.network, programId: h.facilitator.programId, feePayer: h.facilitatorKey.address, server: h.server, asset: h.mint, amount: DEMO_BUDGET, captureDeadlineSeconds: 150, refundDeadlineSeconds: 30, store: new OperationStore(join(dir, "legacy")), orders: new RestaurantOrders(join(dir, "orders")), reclaimJournal: new FileSubmissionJournal(join(dir, "reclaim")), ledger, origin, now: () => h.ledger.now(), getLatestBlockhash: async () => h.lifetime(), handler: async () => { throw new Error("unused legacy one-shot handler"); } };
+  c = { orderSigningKey: "synthetic-order-key", merchantToken, facilitatorUrl: h.url, bearerToken: "local-only-test", network: h.ledger.network, programId: h.facilitator.programId, feePayer: h.facilitatorKey.address, server: h.server, asset: h.mint, amount: DEMO_BUDGET, captureDeadlineSeconds: 150, refundDeadlineSeconds: 30, store: new OperationStore(join(dir, "legacy")), orders: new RestaurantOrders(join(dir, "orders")), reclaimJournal: new FileSubmissionJournal(join(dir, "reclaim")), ledger, origin, now: () => h.ledger.now(), getLatestBlockhash: async () => h.lifetime(), handler: async () => { throw new Error("unused legacy one-shot handler"); } };
   app = createRestaurantApp(c);
 });
 afterEach(async () => { await h.close(); });
@@ -159,111 +156,6 @@ async function expectAction(s: Session, a: string) {
   expect(body, JSON.stringify(body)).toMatchObject({ receipt: { success: true } }); expect(r.status).toBe(200);
   expect(decodeHeader(r.headers.get("PAYMENT-RESPONSE")!)).toMatchObject({ success: true, transaction: body.receipt.transaction });
 }
-describe('selected UNKNOWN authorize effect isolation',()=>{
-  async function fixture(landed=false) {
-    c.network='solana:EtWTRABZaYq6iMfeYKouRu166VU2xqa1';
-    Reflect.set(c.ledger,'network',c.network);Reflect.set(h.facilitator,'network',c.network);
-    c.getLatestBlockhash=async()=>({...h.lifetime(),contextSlot:1n,blockhashSlot:1n,commitment:'finalized' as const,network:c.network,genesisHash:'EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG'});
-    const journalDir=join(dir,'facilitator-journal'),journal=new FileSubmissionJournal(journalDir);
-    Reflect.set(h.facilitator,'journal',journal);
-    vi.spyOn(c.ledger,'submit').mockImplementation(async tx=>{
-      if(landed)h.ok(h.svm.sendTransaction(tx));
-      h.ledger.submissions.push({signature:getSignatureFromTransaction(tx),status:'unknown',transaction:tx});
-      return{kind:'submitted'};
-    });
-    const s=await offer(),path=c.orders.path(s.id);
-    const consent=JSON.stringify({unsignedSha256:createHash('sha256').update(s.unsigned).digest('hex')});
-    expect((await app.request(`${origin}/api/orders/${s.id}/wallet-consent`,{method:'POST',headers:{cookie:s.cookie,origin,'content-type':'application/json'},body:consent})).status).toBe(200);
-    expect((await authorize(s)).status).toBe(402);
-    const order=c.orders.read(s.id),signature=order.events[0]!.transaction,journalPath=join(journalDir,`${signature}.json`),entry=JSON.parse(readFileSync(journalPath,'utf8'));
-    const sha=(p:string)=>createHash('sha256').update(readFileSync(p)).digest('hex');
-    const policy:IsolationPolicy={...PENDING_A_ISOLATION,order:s.id,payment:order.payment,payer:order.payer,signature,
-      orderSha256:sha(path),consentSha256:sha(`${path}.wallet-consent.lock`),busySha256:sha(`${path}.busy`),actionSha256:sha(`${path}.authorize.lock`),
-      journalSha256:sha(journalPath),messageHash:entry.messageHash,signedWireSha256:createHash('sha256').update(Buffer.from(entry.transactionBase64,'base64')).digest('hex')};
-    h.setTime(NOW+190n);h.svm.expireBlockhash();
-    c.ledger.getFinalizedBlockhashStatus=async()=>({kind:'ok',valid:false,slot:5n});
-    c.ledger.getAccountAtLeast=async address=>({kind:'ok',slot:6n,account:await h.ledger.getAccount(address)});
-    c.ledger.getClockAtLeast=async()=>({kind:'ok',commitment:'finalized',slot:7n,unixTimestamp:NOW+190n});
-    const reader={getSignatureStatus:(signature:string)=>c.ledger.getSignatureStatus(signature),
-      getAccountAtLeast:(address:Address,slot:bigint)=>c.ledger.getAccountAtLeast(address,slot),
-      getFinalizedBlockhashStatus:(hash:string,slot:bigint)=>c.ledger.getFinalizedBlockhashStatus!(hash,slot),
-      getClockAtLeast:(slot:bigint)=>c.ledger.getClockAtLeast!(slot,Date.now()+1000),
-      findSignaturesByMessage:async()=>({kind:'ok' as const,signatures:[],truncated:false}),isBlockhashValid:async()=>({kind:'ok' as const,valid:false,slot:5n})};
-    chmodSync(c.orders.dir,0o700);
-    if(process.geteuid?.()===0) {
-      for(const name of readdirSync(c.orders.dir))chownSync(join(c.orders.dir,name),12345,12346);
-      chownSync(c.orders.dir,12345,12346);
-    }
-    const custody={uid:statSync(c.orders.dir).uid,gid:statSync(c.orders.dir).gid};
-    const args={policy,custody,ordersDir:c.orders.dir,journalDirs:[journalDir,c.reclaimJournal instanceof FileSubmissionJournal?c.reclaimJournal.dir:''],programId:c.programId,server:c.server.address,mint:c.asset,funder:c.feePayer,network:c.network,reader};
-    return{s,path,policy,journalPath,args,original:readFileSync(path),consent:readFileSync(`${path}.wallet-consent.lock`),busy:statSync(`${path}.busy`),prepare:()=>prepareUnknownAuthorizeIsolation(args)};
-  }
-  test('one new offer preserves UNKNOWN originals, reservations and exclusive successor; old operations stay locked',async()=>{
-    const f=await fixture(),record=await f.prepare();
-    expect(record).toMatchObject({originalOutcome:'unknown',reserveDisposition:'retained',proof:{kind:'expired-no-successful-authorize-effect'}});
-    const archiveSha256=persistUnknownAuthorizeIsolation(f.policy,f.path,record);
-    c.authorizeIsolationPolicy={...f.policy,archiveSha256};app=createRestaurantApp(c);
-    const v=await view(f.s);expect(v).toMatchObject({status:'pending',authorizeIsolation:{originalOutcome:'unknown',reserveRetained:true}});
-    expect(v.actions.beer).toBe(false);expect(c.orders.busy(f.s.id)).toBe(true);
-    const prepare=()=>app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:f.s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.payer.address})});
-    const results=await Promise.all([prepare(),prepare()]);expect(results.map(r=>r.status).sort()).toEqual([402,409]);
-    expect(readFileSync(f.path)).toEqual(f.original);expect(readFileSync(`${f.path}.wallet-consent.lock`)).toEqual(f.consent);
-    expect(statSync(`${f.path}.busy`).ino).toBe(f.busy.ino);expect(JSON.parse(readFileSync(f.journalPath,'utf8')).attempts).toHaveLength(1);
-    expect(h.ledger.submissions).toHaveLength(1);expect(await h.ledger.getAccount(f.policy.payment as never)).toBeNull();
-    expect((await authorize(f.s)).status).toBe(409);expect((await prepare()).status).toBe(409);
-    const faucetCalls:string[]=[];c.faucet={request:async(path)=>{faucetCalls.push(path);return new Response('{}');}};app=createRestaurantApp(c);
-    const faucet=await app.request(`${origin}/api/faucet/challenge`,{method:'POST',headers:{origin,'Content-Type':'application/json'},body:JSON.stringify({recipient:h.payer.address})});
-    expect(faucet.status).toBe(200);expect(faucetCalls).toEqual(['/challenge']);
-    expect(readFileSync(f.path)).toEqual(f.original);expect(statSync(`${f.path}.busy`).ino).toBe(f.busy.ino);
-  });
-  test.each(['active','unavailable','stale-account','weak-status','known-success','landed','changed-consent','duplicate-action','invalid-signature','inode-drift'])(
-    'UNKNOWN isolation refuses %s without modifying originals or making a submission',async fault=>{
-    const f=await fixture(fault==='landed');
-    if(fault==='active')f.args.reader.getFinalizedBlockhashStatus=async()=>({kind:'ok',valid:true,slot:5n});
-    if(fault==='unavailable')f.args.reader.getFinalizedBlockhashStatus=async()=>({kind:'unavailable',detail:'synthetic unavailable'}) as never;
-    if(fault==='stale-account')f.args.reader.getAccountAtLeast=async address=>({kind:'ok',slot:4n,account:await h.ledger.getAccount(address)});
-    if(['weak-status','known-success'].includes(fault))f.args.reader.getSignatureStatus=async()=>({kind:'found',commitment:fault==='weak-status'?'confirmed':'finalized',slot:1n,err:null}) as never;
-    if(fault==='changed-consent')writeFileSync(`${f.path}.wallet-consent.lock`,'{}');
-    if(fault==='duplicate-action'){const order=c.orders.read(f.s.id);order.events.push({...order.events[0]!,action:'beer'});c.orders.write(order);f.policy.orderSha256=createHash('sha256').update(readFileSync(f.path)).digest('hex');}
-    if(fault==='invalid-signature'){const j=JSON.parse(readFileSync(f.journalPath,'utf8')),bytes=Buffer.from(j.transactionBase64,'base64');bytes[1]=(bytes[1]??0)^1;j.transactionBase64=bytes.toString('base64');writeFileSync(f.journalPath,JSON.stringify(j));f.policy.journalSha256=createHash('sha256').update(readFileSync(f.journalPath)).digest('hex');f.policy.signedWireSha256=createHash('sha256').update(bytes).digest('hex');}
-    if(fault==='inode-drift')f.args.reader.getClockAtLeast=async()=>{const raw=readFileSync(f.path);writeFileSync(`${f.path}.swap`,raw);renameSync(`${f.path}.swap`,f.path);return{kind:'ok',commitment:'finalized',slot:7n,unixTimestamp:NOW+190n};};
-    await expect(f.prepare()).rejects.toThrow();expect(existsSync(`${f.path}.authorize-isolation.lock`)).toBe(false);expect(h.ledger.submissions).toHaveLength(1);expect(c.orders.busy(f.s.id)).toBe(true);
-  });
-  test.each(['cloned-record','changed-proof','changed-original','changed-journal','replaced-journal'])('isolation writer rejects %s without a producer capability/custody match',async fault=>{
-    const f=await fixture();let record=await f.prepare();
-    if(fault==='cloned-record')record=JSON.parse(JSON.stringify(record));
-    if(fault==='changed-proof')record.proof.clockSlot='999';
-    if(fault==='changed-original')writeFileSync(`${f.path}.busy`,'beer');
-    if(fault==='changed-journal')writeFileSync(f.journalPath,'{}');
-    if(fault==='replaced-journal'){writeFileSync(`${f.journalPath}.swap`,readFileSync(f.journalPath),{mode:0o600});renameSync(`${f.journalPath}.swap`,f.journalPath);}
-    expect(()=>persistUnknownAuthorizeIsolation(f.policy,f.path,record)).toThrow();expect(existsSync(`${f.path}.authorize-isolation.lock`)).toBe(false);
-  });
-  test('partial archive, archive digest drift and active original hash forbid a new order',async()=>{
-    const f=await fixture(),record=await f.prepare(),archiveSha256=persistUnknownAuthorizeIsolation(f.policy,f.path,record);
-    c.authorizeIsolationPolicy={...f.policy,archiveSha256};app=createRestaurantApp(c);
-    chmodSync(`${f.path}.authorize-isolation.lock`,0o600);expect(()=>authorizeIsolationEvidence(c.authorizeIsolationPolicy,c.orders.read(f.s.id),f.path)).toThrow();
-    chmodSync(`${f.path}.authorize-isolation.lock`,0o400);c.authorizeIsolationPolicy.archiveSha256='0'.repeat(64);expect(()=>authorizeIsolationEvidence(c.authorizeIsolationPolicy,c.orders.read(f.s.id),f.path)).toThrow();
-    c.authorizeIsolationPolicy.archiveSha256=archiveSha256;
-    f.args.reader.getFinalizedBlockhashStatus=async()=>({kind:'ok',valid:true,slot:5n});c.ledger.getFinalizedBlockhashStatus=f.args.reader.getFinalizedBlockhashStatus;
-    expect((await app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:f.s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.payer.address})})).status).toBe(409);
-  });
-  test.each(['','.wallet-consent.lock','.busy','.authorize.lock'])('missing original custody file %s cannot be mistaken for an absent previous session',async suffix=>{
-    const f=await fixture(),record=await f.prepare(),archiveSha256=persistUnknownAuthorizeIsolation(f.policy,f.path,record);
-    c.authorizeIsolationPolicy={...f.policy,archiveSha256};app=createRestaurantApp(c);
-    unlinkSync(`${f.path}${suffix}`); // Adversarial fixture only.
-    expect((await app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:f.s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.payer.address})})).status).toBe(409);
-    expect(existsSync(`${f.path}.authorize-successor.lock`)).toBe(false);expect(h.ledger.submissions).toHaveLength(1);
-  });
-});
-test('one original signature observation is shared within a response, never across HTTP requests',async()=>{
-  const s=await offer();expect((await authorize(s)).status).toBe(200);
-  const lookup=vi.spyOn(c.ledger,'getSignatureStatus');
-  await view(s);expect(lookup).toHaveBeenCalledTimes(1);lookup.mockClear();
-  await view(s);expect(lookup).toHaveBeenCalledTimes(1);lookup.mockClear();
-  expect((await app.request(`${origin}/api/orders/${s.id}/actions/beer`,{headers:{authorization:`Bearer ${merchantToken}`}})).status).toBe(200);
-  expect(lookup).toHaveBeenCalledTimes(1);lookup.mockResolvedValue({kind:'not-found'});
-  expect((await app.request(`${origin}/api/orders/${s.id}`,{headers:{cookie:s.cookie}})).status).toBe(409);
-});
 describe("read-only discovery and same-origin order preparation", () => {
   test.each(["", "?payer=invalid&scenario=invalid", "?payer=public-wallet&scenario=normal"])("GET /resource%s only discovers x402 requirements", async query => {
     const reads = vi.spyOn(c.orders, "read"), writes = vi.spyOn(c.orders, "create");
@@ -274,7 +166,8 @@ describe("read-only discovery and same-origin order preparation", () => {
     expect(required).toMatchObject({ x402Version: 2, accepts: [{ amount: "100000000" }] });
     expect(await response.json()).toEqual(required);
     expect(response.headers.get("set-cookie")).toBeNull();
-    for (const call of [reads, writes, latest, simulate]) expect(call).not.toHaveBeenCalled();
+    for (const call of [reads, writes, simulate]) expect(call).not.toHaveBeenCalled();
+    expect(latest).toHaveBeenCalledTimes(1); // v2 offers bind an observed slot.
     expect(readdirSync(c.orders.dir)).toEqual([]);
     expect(h.ledger.submissions).toHaveLength(0);
   });
@@ -545,128 +438,18 @@ describe("restaurant budget lifecycle", () => {
     const r=await app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.payer.address})});
     expect(r.status).toBe(409);expect(h.ledger.submissions).toHaveLength(0);
   });
-  async function expiredAuthorizeDraft(policyList=false) {
-    const started=await c.now();
-    c.getLatestBlockhash=async()=>({...h.lifetime(),blockhashSlot:1n,commitment:'finalized' as const,network:c.network,genesisHash:'local-genesis'});
-    const s=await offer();
-    const consent=await app.request(`${origin}/api/orders/${s.id}/wallet-consent`,{method:'POST',headers:{cookie:s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({unsignedSha256:createHash('sha256').update(s.unsigned).digest('hex')})});expect(consent.status).toBe(200);
-    const path=c.orders.path(s.id),stored=c.orders.read(s.id);
-    // First-party lifetime provenance fixture, not a live origin claim.
-    stored.authorizeLifetime={version:1,messageHash:(await import('../src/submission-journal.ts')).messageHash(getTransactionDecoder().decode(getBase64Encoder().encode(s.unsigned)).messageBytes),blockhash:h.lifetime().blockhash,lastValidBlockHeight:h.lifetime().lastValidBlockHeight.toString(),contextSlot:'1',commitment:'finalized',network:c.network,genesisHash:'local-genesis'};c.orders.write(stored);
-    const original=readFileSync(path,'utf8'),consentBytes=readFileSync(`${path}.wallet-consent.lock`,'utf8');
-    const policy={...EXPIRED_A_POLICY,order:s.id,payment:stored.payment,payer:stored.payer,orderSha256:createHash('sha256').update(original).digest('hex'),consentSha256:createHash('sha256').update(consentBytes).digest('hex')};
-    if(policyList){delete c.authorizeAbandonPolicy;c.authorizeAbandonPolicies=[EXPIRED_A_POLICY,policy];}else c.authorizeAbandonPolicy=policy;
-    h.setTime(started+190n);h.svm.expireBlockhash();
-    c.ledger.getFinalizedBlockhashStatus=async()=>({kind:'ok',valid:false,slot:5n});
-    c.ledger.getAccountAtLeast=async address=>({kind:'ok',slot:6n,account:await h.ledger.getAccount(address)});
-    c.ledger.getClockAtLeast=async()=>({kind:'ok',commitment:'finalized',slot:7n,unixTimestamp:started+190n});
-    app=createRestaurantApp(c);
-    return {s,path,original,consentBytes,policy,abandon:()=>app.request(`${origin}/api/orders/${s.id}/abandon-authorize`,{method:'POST',headers:{cookie:s.cookie,origin}})};
-  }
-  test('runtime selector retains the legacy policy and accepts only the two exact selected drafts',()=>{
-    expect(selectedAbandonPolicies(EXPIRED_A_POLICY)).toEqual([EXPIRED_A_POLICY]);
-    expect(selectedAbandonPolicies([EXPIRED_A_POLICY,UNRECORDED_A_POLICY])).toEqual([EXPIRED_A_POLICY,UNRECORDED_A_POLICY]);
-    for(const invalid of [null,[],UNRECORDED_A_POLICY,[UNRECORDED_A_POLICY],[EXPIRED_A_POLICY,EXPIRED_A_POLICY],{...UNRECORDED_A_POLICY,order:'a'.repeat(32)},
-      {...UNRECORDED_A_POLICY,consentSha256:'a'.repeat(64)},{...EXPIRED_A_POLICY,extra:true},[EXPIRED_A_POLICY,UNRECORDED_A_POLICY,UNRECORDED_A_POLICY]]) {
-      expect(()=>selectedAbandonPolicies(invalid)).toThrow('exceeds selected expired drafts');
-    }
-    const legacy=Object.fromEntries(Object.entries(EXPIRED_A_POLICY).sort(([a],[b])=>a.localeCompare(b)));
-    expect(JSON.stringify(selectedAbandonPolicies([legacy,UNRECORDED_A_POLICY])[0])).toBe(JSON.stringify(legacy));
-  });
-  test.each([false,true])('explicit selected unfunded abandonment with policy list %s retains originals across restart and permits one separate offer',async policyList=>{
-    const a=await expiredAuthorizeDraft(policyList);
-    const r=await a.abandon();expect(r.status).toBe(200);expect(await r.json()).toMatchObject({abandoned:true,proof:{kind:'expired-unfunded-authorize',originSlot:'1',expirySlot:'5',paymentSlot:'6',clockSlot:'7'}});
-    expect(readFileSync(a.path,'utf8')).toBe(a.original);expect(readFileSync(`${a.path}.wallet-consent.lock`,'utf8')).toBe(a.consentBytes);
-    const archive=readFileSync(`${a.path}.authorize-abandon.lock`,'utf8');expect(JSON.parse(archive)).toMatchObject({originalOrder:a.original,originalConsent:a.consentBytes});
+  test.each([false, true])('expired consent stays blocked across restart even with absent accounts; partial archive=%s', async partial => {
+    const s = await offer(), path = c.orders.path(s.id);
+    expect((await app.request(`${origin}/api/orders/${s.id}/wallet-consent`, {method:'POST', headers:{cookie:s.cookie,origin,'content-type':'application/json'}, body:JSON.stringify({unsignedSha256:createHash('sha256').update(s.unsigned).digest('hex')})})).status).toBe(200);
+    if(partial)createDurableFile(`${path}.authorize-abandon.lock`, '{');
+    const original=readFileSync(path),consent=readFileSync(`${path}.wallet-consent.lock`);
+    h.setTime(NOW+1000n);h.svm.expireBlockhash();
     app=createRestaurantApp({...c,orders:new RestaurantOrders(c.orders.dir)});
-    const v=await view(a.s);expect(v).toMatchObject({status:'abandoned',authorizeAbandoned:{kind:'expired-unfunded-authorize'}});expect(v.unsigned).toBeUndefined();
-    expect((await a.abandon()).status).toBe(409);
-    expect((await app.request(`${origin}/api/orders/${a.s.id}/signing-preflight?operation=authorize`,{headers:{cookie:a.s.cookie}})).status).toBe(409);
-    const otherPayer=await app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:a.s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.server.address})});
-    expect(otherPayer.status).toBe(409);expect(existsSync(`${a.path}.authorize-successor.lock`)).toBe(false);
-    const next=await app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:a.s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.payer.address,scenario:'normal'})});expect(next.status).toBe(402);
-    const body=await next.json() as any;expect(body.order).not.toBe(a.s.id);expect(body.required.accepts[0].extra.captureDeadline).toBe(Number(NOW+340n));
-    expect(readFileSync(a.path,'utf8')).toBe(a.original);expect(readFileSync(`${a.path}.authorize-abandon.lock`,'utf8')).toBe(archive);expect(h.ledger.submissions).toHaveLength(0);
-  });
-  test.each(['no-policy','wrong-order','wrong-identity','order-drift','consent-drift','valid-hash','unavailable','stale-expiry','stale-payment','stale-clock','before-deadline','existing-PDA','pending','event','dispatch-lock','operation-journal','submission-journal','partial-archive','signed-wire','wrong-wire','missing-origin'].flatMap(failure=>[false,true].map(policyList=>[policyList,failure] as const)))('authorize abandonment with policy list %s refuses %s without modifying originals or sending',async (policyList,failure)=>{
-    const a=await expiredAuthorizeDraft(policyList);
-    if(failure==='no-policy'){delete c.authorizeAbandonPolicy;delete c.authorizeAbandonPolicies;}
-    if(failure==='wrong-order')a.policy.order='0'.repeat(32);
-    if(failure==='wrong-identity')a.policy.payer=h.server.address;
-    if(failure==='valid-hash')c.ledger.getFinalizedBlockhashStatus=async()=>({kind:'ok',valid:true,slot:5n});
-    if(failure==='unavailable')c.ledger.getFinalizedBlockhashStatus=async()=>({kind:'unavailable',detail:'fixture'});
-    if(failure==='stale-expiry')c.ledger.getFinalizedBlockhashStatus=async()=>({kind:'ok',valid:false,slot:1n});
-    if(failure==='stale-payment')c.ledger.getAccountAtLeast=async address=>({kind:'ok',slot:4n,account:await h.ledger.getAccount(address)});
-    if(failure==='stale-clock')c.ledger.getClockAtLeast=async()=>({kind:'ok',commitment:'finalized',slot:4n,unixTimestamp:NOW+190n});
-    if(failure==='before-deadline')c.ledger.getClockAtLeast=async()=>({kind:'ok',commitment:'finalized',slot:7n,unixTimestamp:NOW+170n});
-    if(failure==='existing-PDA')c.ledger.getAccountAtLeast=async()=>({kind:'ok',slot:6n,account:{owner:c.programId,lamports:1n,executable:false,data:new Uint8Array()}});
-    if(failure==='operation-journal')vi.spyOn(c.store,'list').mockReturnValue([{authorize:{payment:c.orders.read(a.s.id).payment}} as any]);
-    if(failure==='submission-journal')vi.spyOn(c.reclaimJournal,'findByMessageHash').mockReturnValue([{} as any]);
-    const order=c.orders.read(a.s.id);
-    if(failure==='signed-wire')order.unsigned=await sign(order.unsigned);
-    if(failure==='wrong-wire')order.unsigned=encodeTransaction(await h.signedAuthorize({salt:h.newSalt(),signers:[]}));
-    if(failure==='missing-origin')order.authorizeLifetime!.contextSlot=null;
-    if(failure==='pending')order.status='pending';
-    if(failure==='event')order.events.push({action:'authorize',status:'prepared',transaction:'original'} as any);
-    if(failure==='order-drift')order.required.accepts[0]!.extra!.captureDeadline=1;
-    c.orders.write(order);
-    if(['signed-wire','wrong-wire','missing-origin'].includes(failure)) {
-      a.policy.orderSha256=createHash('sha256').update(readFileSync(a.path)).digest('hex');
-      (await import('node:fs')).writeFileSync(`${a.path}.wallet-consent.lock`,JSON.stringify({order:order.id,unsignedSha256:createHash('sha256').update(order.unsigned).digest('hex')}));
-      a.policy.consentSha256=createHash('sha256').update(readFileSync(`${a.path}.wallet-consent.lock`)).digest('hex');
-    }
-    if(failure==='consent-drift')(await import('node:fs')).writeFileSync(`${a.path}.wallet-consent.lock`,'{}');
-    if(failure==='dispatch-lock')createDurableFile(`${a.path}.authorize.lock`,'original');
-    if(failure==='partial-archive')createDurableFile(`${a.path}.authorize-abandon.lock`,'{');
-    const before=readFileSync(a.path),consent=readFileSync(`${a.path}.wallet-consent.lock`);
-    expect((await a.abandon()).status).toBe(409);expect(readFileSync(a.path)).toEqual(before);expect(readFileSync(`${a.path}.wallet-consent.lock`)).toEqual(consent);expect(h.ledger.submissions).toHaveLength(0);
-  });
-  test('two selected classifications retain both archives and fail closed when either selection is lost or duplicated',async()=>{
-    const first=await expiredAuthorizeDraft();expect((await first.abandon()).status).toBe(200);
-    const archive=readFileSync(`${first.path}.authorize-abandon.lock`);
-    const second=await expiredAuthorizeDraft();delete c.authorizeAbandonPolicy;c.authorizeAbandonPolicies=[first.policy,second.policy];
-    app=createRestaurantApp(c);expect((await view(first.s)).status).toBe('abandoned');expect((await view(second.s)).authorizeAbandonEligible).toBe(true);
-    expect((await second.abandon()).status).toBe(200);
-    app=createRestaurantApp({...c,orders:new RestaurantOrders(c.orders.dir)});
-    expect((await view(first.s)).status).toBe('abandoned');expect((await view(second.s)).status).toBe('abandoned');
-    expect(readFileSync(`${first.path}.authorize-abandon.lock`)).toEqual(archive);expect(readFileSync(first.path,'utf8')).toBe(first.original);
-    c.authorizeAbandonPolicies=[second.policy];app=createRestaurantApp(c);
-    expect((await app.request(`${origin}/api/orders/${first.s.id}`,{headers:{cookie:first.s.cookie}})).status).toBe(409);
-    c.authorizeAbandonPolicies=[first.policy,second.policy,second.policy];app=createRestaurantApp(c);
-    expect((await second.abandon()).status).toBe(409);expect(h.ledger.submissions).toHaveLength(0);
-  });
-  test.each([false,true])('partial abandonment archive and busy reservation remain blocked across restart (policy list %s)',async policyList=>{
-    const a=await expiredAuthorizeDraft(policyList);createDurableFile(`${a.path}.authorize-abandon.lock`,'{"schema":1}');
-    app=createRestaurantApp({...c,orders:new RestaurantOrders(c.orders.dir)});
-    expect((await app.request(`${origin}/api/orders/${a.s.id}`,{headers:{cookie:a.s.cookie}})).status).toBe(409);
-    expect((await app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:a.s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.payer.address})})).status).toBe(409);
-    expect((await a.abandon()).status).toBe(409);expect(h.ledger.submissions).toHaveLength(0);
-  });
-  test.each([false,true])('concurrent successor offers reserve exactly one; partial intent blocks after restart (policy list %s)',async policyList=>{
-    const a=await expiredAuthorizeDraft(policyList);expect((await a.abandon()).status).toBe(200);
-    const next=()=>app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:a.s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.payer.address,scenario:'normal'})});
-    const results=await Promise.all([next(),next()]);expect(results.map(r=>r.status).sort()).toEqual([402,409]);
-    const intent=JSON.parse(readFileSync(`${a.path}.authorize-successor.lock`,'utf8'));
-    expect(intent.previousOrder).toBe(a.s.id);expect(c.orders.read(intent.nextOrder).status).toBe('draft');
-    app=createRestaurantApp({...c,orders:new RestaurantOrders(c.orders.dir)});expect((await next()).status).toBe(409);expect((await view(a.s)).status).toBe('pending');expect(h.ledger.submissions).toHaveLength(0);
-  });
-  test.each([false,true])('partial successor reservation blocks new offer without fabricating a completed successor (policy list %s)',async policyList=>{
-    const a=await expiredAuthorizeDraft(policyList);await a.abandon();createDurableFile(`${a.path}.authorize-successor.lock`,'{');
-    app=createRestaurantApp({...c,orders:new RestaurantOrders(c.orders.dir)});
-    expect((await view(a.s)).status).toBe('pending');
-    expect((await app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:a.s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.payer.address})})).status).toBe(409);expect(h.ledger.submissions).toHaveLength(0);
-  });
-  test.each([false,true])('retained busy abandonment reservation cannot be reused after restart (policy list %s)',async policyList=>{
-    const a=await expiredAuthorizeDraft(policyList);c.orders.reserve(a.s.id,'authorize');
-    app=createRestaurantApp({...c,orders:new RestaurantOrders(c.orders.dir)});
-    expect((await a.abandon()).status).toBe(409);expect(c.orders.busy(a.s.id)).toBe(true);expect((await view(a.s)).authorizeAbandonEligible).toBe(false);expect(h.ledger.submissions).toHaveLength(0);
-  });
-  test.each([false,true])('abandonment serializes against concurrent abandonment and fresh consent (policy list %s)',async policyList=>{
-    const a=await expiredAuthorizeDraft(policyList);let entered!:()=>void,release!:(v:any)=>void;const started=new Promise<void>(r=>entered=r),waiting=new Promise<any>(r=>release=r);
-    c.ledger.getFinalizedBlockhashStatus=async()=>{entered();return waiting;};const first=a.abandon();await started;
-    expect((await a.abandon()).status).toBe(409);
-    expect((await app.request(`${origin}/api/orders/${a.s.id}/wallet-consent`,{method:'POST',headers:{cookie:a.s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({unsignedSha256:createHash('sha256').update(a.s.unsigned).digest('hex')})})).status).toBe(409);
-    release({kind:'ok',valid:false,slot:5n});expect((await first).status).toBe(200);expect(h.ledger.submissions).toHaveLength(0);
+    expect((await app.request(`${origin}/api/orders/${s.id}/abandon-authorize`,{method:'POST',headers:{cookie:s.cookie,origin}})).status).toBe(404);
+    const retry=()=>app.request(`${origin}/api/orders`,{method:'POST',headers:{cookie:s.cookie,origin,'content-type':'application/json'},body:JSON.stringify({payer:h.payer.address})});
+    expect((await Promise.all([retry(),retry()])).map(r=>r.status)).toEqual([409,409]);
+    expect(readFileSync(path)).toEqual(original);expect(readFileSync(`${path}.wallet-consent.lock`)).toEqual(consent);
+    expect(h.ledger.submissions).toHaveLength(0);
   });
   test('reclaim wallet consent durably preserves its original draft without permitting replacement signing',async()=>{
     const s=await offer();await authorize(s);h.setTime(NOW+150n);
@@ -1192,7 +975,7 @@ describe("#52 exact-offer provenance through restaurant persistence and relay", 
     expect(original.messageHash).toBe((await import("../src/submission-journal.ts")).messageHash(getTransactionDecoder().decode(getBase64Encoder().encode(s.unsigned)).messageBytes));
     const journal = new FileSubmissionJournal(join(dir, "relay"));
     const { Facilitator } = await import("../src/facilitator.ts");
-    const f = new Facilitator({ network: c.network, programId: c.programId, feePayer: h.facilitatorKey,
+    const f = new Facilitator({ ...h.orderConfig, network: c.network, programId: c.programId, feePayer: h.facilitatorKey,
       ledger: h.ledger, journal, observationKey: c.bearerToken, ...demoSponsorComputeBounds() });
     const { LIFETIME_EXTENSION, attestObservation } = await import("../src/lifetime-provenance.ts");
     c.fetchImpl = async (_url, init) => {

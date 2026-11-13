@@ -106,25 +106,25 @@ test.each(['budget','admission','signer'])('failed %s step retains intent and re
   if(fault==='budget'){const reserve=f.budget.reserve.bind(f.budget);f.budget.reserve=(...a)=>{reserve(...a);throw Error('budget fsync');};}
   if(fault==='admission'){const reserve=f.admission.reserve.bind(f.admission);f.admission.reserve=()=>{reserve();throw Error('admission fsync');};}
   await expect(f.operator.issue(fault==='signer'?async()=>{throw Error('signer unavailable');}:f.load)).rejects.toThrow();
-  expect(f.store.read('intent')).not.toBeNull();expect(f.budget.summary().reserved).toBe(2_139_280n);
+  expect(f.store.read('intent')).not.toBeNull();expect(f.budget.summary().reserved).toBe(100_000n + f.svm.minimumBalanceForRentExemption(165n));
   expect(f.counters()).toEqual({sends:0,loads:0});await expect(f.operator.issue(f.load)).rejects.toThrow();
 });
 test('lost response observes only original finalized bytes and cannot replenish stock',async()=>{
   const f=await fixture(),submit=f.backend.submit;f.backend.submit=async tx=>{await submit(tx);throw Error('response lost');};
-  await expect(f.operator.issue(f.load)).rejects.toThrow(/lost/);expect(f.budget.summary().reserved).toBe(2_139_280n);
+  await expect(f.operator.issue(f.load)).rejects.toThrow(/lost/);expect(f.budget.summary().reserved).toBe(100_000n + f.svm.minimumBalanceForRentExemption(165n));
   expect(await f.operator.observe()).toMatchObject({status:'FINALIZED_SUCCEEDED'});await expect(f.operator.issue(f.load)).rejects.toThrow();
   expect(f.counters()).toEqual({sends:1,loads:1});expect(f.admission.summary().used).toBe(44);
 });
 test('missing original finalized history retains the full ceiling and single consumed admission',async()=>{
   const f=await fixture();f.backend.finalized=async()=>null;
   expect(await f.operator.issue(f.load)).toMatchObject({status:'UNKNOWN'});expect(await f.operator.observe()).toMatchObject({status:'UNKNOWN'});
-  expect(f.budget.summary().reserved).toBe(2_139_280n);expect(f.admission.summary().used).toBe(44);
+  expect(f.budget.summary().reserved).toBe(100_000n + f.svm.minimumBalanceForRentExemption(165n));expect(f.admission.summary().used).toBe(44);
   await expect(f.operator.issue(f.load)).rejects.toThrow();expect(f.counters()).toEqual({sends:1,loads:1});
 });
 test('no retained signed original stays UNKNOWN and never reloads credentials',async()=>{
   const f=await fixture();await expect(f.operator.issue(async()=>{throw Error('crash before key access');})).rejects.toThrow();
   expect(await f.operator.observe()).toMatchObject({status:'UNKNOWN'});await expect(f.operator.issue(f.load)).rejects.toThrow();
-  expect(f.counters()).toEqual({sends:0,loads:0});expect(f.budget.summary().reserved).toBe(2_139_280n);
+  expect(f.counters()).toEqual({sends:0,loads:0});expect(f.budget.summary().reserved).toBe(100_000n + f.svm.minimumBalanceForRentExemption(165n));
 });
 test.each(['genesis','rent','fee','admission','budget','pool','authority','wrong-signer'])('refuses %s before submission',async fault=>{
   const f=await fixture();let load=f.load;
@@ -147,7 +147,7 @@ test.each(['wire','delta','slot','pool-amount','message'])('rejects mismatched o
   if(fault==='slot'){const snapshot=f.backend.snapshot;f.backend.snapshot=async(...a)=>({...await snapshot(...a),slot:0n});}
   if(fault==='pool-amount'){const a=f.svm.getAccount(await ata(f.plan.sponsor,f.plan.mint));if(!a.exists)throw Error();f.svm.setAccount({...a,data:getTokenEncoder().encode({...getTokenDecoder().decode(a.data),amount:1n})});}
   if(fault==='message'){const intent=f.store.read('intent')!;intent.messageHash='0'.repeat(64);writeFileSync(join(f.storeDir,'intent.json'),JSON.stringify(intent));}
-  await expect(f.operator.observe()).rejects.toThrow();expect(f.budget.summary().reserved).toBe(2_139_280n);expect(f.counters().sends).toBe(1);
+  await expect(f.operator.observe()).rejects.toThrow();expect(f.budget.summary().reserved).toBe(100_000n + f.svm.minimumBalanceForRentExemption(165n));expect(f.counters().sends).toBe(1);
 });
 test('finalized failure charges only original fee, retains used admission and forbids replacement',async()=>{
   const f=await fixture(),submit=f.backend.submit;
@@ -166,7 +166,7 @@ test('source revision drift cannot reinterpret a retained stock original',async(
 });
 async function workerInput(f:Awaited<ReturnType<typeof fixture>>) {
   const snapshot=await f.backend.snapshot([f.plan.sponsor,f.plan.mint,await ata(f.plan.sponsor,f.plan.mint)]);
-  writeFileSync(join(f.directory,'worker-input.json'),JSON.stringify({plan:f.plan,budgetPolicy:f.budget.policy,lifetime:await f.backend.latest(),
+  writeFileSync(join(f.directory,'worker-input.json'),JSON.stringify({plan:f.plan,budgetPolicy:f.budget.policy,lifetime:await f.backend.latest(),rent:await f.backend.rent(165),
     accounts:snapshot.accounts.map(a=>a?{...a,data:Array.from(a.data)}:null)},(_k,v)=>typeof v==='bigint'?String(v):v),{mode:0o600});
 }
 function stockWorker(directory:string,mode='stop') {
@@ -178,7 +178,7 @@ test('separate OS processes consume exactly one stock admission before signer ac
   const f=await fixture();await workerInput(f);
   const workers=[stockWorker(f.directory),stockWorker(f.directory)];await Promise.all(workers.map(p=>once(p,'exit')));
   expect(workers.some(p=>p.exitCode===2),workers.map(p=>p.diagnostic()).join('\n')).toBe(true);
-  expect(f.admission.summary().used).toBe(44);expect(f.budget.summary().reserved).toBe(2_139_280n);
+  expect(f.admission.summary().used).toBe(44);expect(f.budget.summary().reserved).toBe(100_000n + f.svm.minimumBalanceForRentExemption(165n));
   expect(readFileSync(join(f.directory,'signer-access.json'),'utf8')).toBe('SYNTHETIC_NO_KEY_ACCESS');
   expect(await f.operator.observe()).toMatchObject({status:'UNKNOWN'});
 });
@@ -190,7 +190,7 @@ test('SIGKILL after durable budget/admission consumes the action forever without
     const exited=once(worker,'exit');worker.kill('SIGKILL');await exited;
   } finally {worker.kill('SIGKILL');}
   await expect(f.operator.issue(f.load)).rejects.toThrow();expect(await f.operator.observe()).toMatchObject({status:'UNKNOWN'});
-  expect(f.admission.summary().used).toBe(44);expect(f.budget.summary().reserved).toBe(2_139_280n);expect(f.counters()).toEqual({sends:0,loads:0});
+  expect(f.admission.summary().used).toBe(44);expect(f.budget.summary().reserved).toBe(100_000n + f.svm.minimumBalanceForRentExemption(165n));expect(f.counters()).toEqual({sends:0,loads:0});
 },15_000);
 test('symlink, hardlink, permissive record and replaced store directory fail closed',async()=>{
   const f=await fixture();symlinkSync('/dev/null',join(f.storeDir,'intent.json'));expect(()=>f.store.read('intent')).toThrow();rmSync(join(f.storeDir,'intent.json'));

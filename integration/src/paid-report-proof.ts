@@ -13,7 +13,7 @@ export type ReportProofReader = Pick<ChainReader, "getSignatureStatus" | "getAcc
   getFinalizedTransaction(signature: string): Promise<FinalizedTransactionEvidence>;
 };
 export type ReportTerms = {
-  payer: Address; payment: Address; salt: string; maximum: string; captureDeadline: string; refundDeadline: string;
+  payer: Address; payment: Address; salt: string; authorizeUntilSlot: string; rentRefundRecipient: Address; maximum: string; captureDeadline: string; refundDeadline: string;
 };
 export type ReportProof = { signature: string; slot: string; held: string; refundable: string;
   tokenDeltas: { payer: string; merchant: string; vault: string } };
@@ -67,6 +67,7 @@ export async function proveReportSettlement(
   const payment = decodePayment(snapshot.account.data);
   if (!payment || payment.payer !== terms.payer || payment.server !== config.server.address || payment.mint !== config.asset ||
       Buffer.from(payment.salt).toString("hex") !== terms.salt || payment.maximum.toString() !== terms.maximum ||
+      payment.authorizeUntilSlot.toString() !== terms.authorizeUntilSlot || payment.rentRefundRecipient !== terms.rentRefundRecipient ||
       payment.captureDeadline.toString() !== terms.captureDeadline || payment.refundDeadline.toString() !== terms.refundDeadline ||
       payment.held !== expected.held || payment.refundable !== expected.refundable) throw new Error("fenced payment terms or H/F differ");
   return { signature, slot: status.slot.toString(), held: payment.held.toString(), refundable: payment.refundable.toString(),

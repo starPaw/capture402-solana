@@ -1,3 +1,5 @@
+import { sealOrderTerms, businessOrderKey } from "../src/order-terms.ts";
+import { runtimeOrderConfig } from "../src/order-runtime.ts";
 import { withShared } from "../src/coordination.ts";
 // SAC-006 criteria 2 and 4 on Devnet, through `Facilitator.settle`/`verify` on the real
 // `RpcLedger` (the code path `devnet-server.ts` runs, minus HTTP, so one driver can chain several
@@ -63,7 +65,7 @@ async function main(): Promise<void> {
   const c = await context();
   const { record, ledger, sponsor, payer, server, mint } = c;
   const journal = new FileSubmissionJournal(join(process.env.SAC006_EVIDENCE_DIR!, "chains-journal"));
-  const facilitator = new Facilitator({ journal, network: record.network.caip2, programId: record.programId, feePayer: sponsor, ledger });
+  const facilitator = new Facilitator({ ...runtimeOrderConfig(record, server.address), journal, network: record.network.caip2, programId: record.programId, feePayer: sponsor, ledger });
   const lifetime = () => ledger.latestBlockhash();
   // Every later account read must follow all transaction/expiry evidence already observed.
   let evidenceSlot = 0n;
@@ -71,15 +73,17 @@ async function main(): Promise<void> {
   const state = (label: string, payment?: Address, minSlot = 0n) =>
     snapshot(c, label, payment, minSlot > evidenceSlot ? minSlot : evidenceSlot);
 
-  const requirements = (t: Terms): PaymentRequirements => ({
+  const issued = new Map<string, {orderId:string; authorizeUntilSlot:bigint}>();
+  const termsKey = (t:Terms) => `${t.maximum}:${t.dc}:${t.dr}`;
+  const requirements = (t: Terms): PaymentRequirements => sealOrderTerms({
     scheme: "auth-capture",
     network: record.network.caip2,
     amount: t.maximum.toString(),
     asset: mint,
     payTo: server.address,
     maxTimeoutSeconds: 120,
-    extra: { paymentFlow: "escrow", captureDeadline: t.dc.toString(), refundDeadline: t.dr.toString(), programId: record.programId, feePayer: sponsor.address },
-  });
+    extra: { protocolVersion:2, orderId: issued.get(termsKey(t))?.orderId ?? businessOrderKey(server.address, "invalid-unissued-terms"), authorizeUntilSlot: (issued.get(termsKey(t))?.authorizeUntilSlot ?? 0n).toString(), paymentFlow: "escrow", captureDeadline: t.dc.toString(), refundDeadline: t.dr.toString(), programId: record.programId, feePayer: sponsor.address },
+  }, process.env.SAC006_BEARER_TOKEN!);
   const body = (req: PaymentRequirements, payload: Record<string, unknown>, tx?: Parameters<typeof transactionObservation>[0]) => ({ lifetimeObservation: tx ? { observation: transactionObservation(tx) } : undefined, x402Version: 2, paymentPayload: { x402Version: 2, accepted: req, payload }, paymentRequirements: req });
   const stored = (payment: Address) => ({ programId: record.programId, payment, payer: payer.address, server: server.address, mint });
   const signedByServer = async (ix: Parameters<typeof buildTransaction>[0]["instructions"][number]) =>
@@ -104,8 +108,12 @@ async function main(): Promise<void> {
 
   async function authorize(maximum: bigint, dc: bigint, dr: bigint): Promise<Address> {
     const salt = crypto.getRandomValues(new Uint8Array(32));
-    const ix = await authorizeInstruction({ programId: record.programId, payer: payer.address, server: server.address, mint, funder: sponsor.address, salt, maximum, captureDeadline: dc, refundDeadline: dr });
-    const tx = await buildTransaction({ feePayer: sponsor.address, instructions: [ix], signers: [payer], lifetime: await lifetime() });
+    const life = await lifetime();
+    if (life.contextSlot === undefined) throw Error("observed authorization slot required");
+    const authorizeUntilSlot = life.contextSlot + 1500n;
+    issued.set(termsKey({maximum,dc,dr}), {orderId:businessOrderKey(server.address,crypto.randomUUID()),authorizeUntilSlot});
+    const ix = await authorizeInstruction({ programId: record.programId, payer: payer.address, server: server.address, mint, funder: sponsor.address, salt, authorizeUntilSlot, maximum, captureDeadline: dc, refundDeadline: dr });
+    const tx = await buildTransaction({ feePayer: sponsor.address, instructions: [ix], signers: [payer], lifetime: life });
     const res = await succeeded("authorize", await facilitator.settle(body(requirements({ maximum, dc, dr }), authorizePayload(tx), tx)));
     return (res.extensions?.["auth-capture"] as { payment: Address }).payment;
   }

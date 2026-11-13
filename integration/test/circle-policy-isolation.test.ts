@@ -103,11 +103,11 @@ test.each([['relayAdmission','relay-attempts',600],['orderAdmission','orders',10
 });
 test('original UNKNOWN still blocks orders after rejected substitution, with all bytes and locks retained',async()=>{
   const path=custody.stores.orders.path,orders=new RestaurantOrders(physical(path)),id='a'.repeat(32);
-  orders.create({id,capabilityHash:'b'.repeat(64),payer:treasury,payment:treasury,scenario:'normal',required:{accepts:[{amount:approval.budget,asset:approval.mint}]},
+  orders.create({id,capabilityHash:'b'.repeat(64),payer:treasury,payment:treasury,scenario:'normal',required:{accepts:[{amount:approval.budget,asset:approval.mint,extra:{protocolVersion:2}}]},
     unsigned:'SYNTHETIC_NEVER_SIGNED',createdAt:1000,status:'draft',events:[]} as unknown as Parameters<RestaurantOrders['create']>[0]);
   orders.reserve(id,'authorize');
   const retained=Object.fromEntries(readdirSync(physical(path)).map(name=>[name,readFileSync(join(physical(path),name),'utf8')]));
-  const config={paymentProfile:CIRCLE_PROFILE,network:approval.network,programId:approval.programId,asset:approval.mint,feePayer:treasury,server:{address:merchant},origin:approval.origin,
+  const config={ orderSigningKey: "synthetic-order-key",paymentProfile:CIRCLE_PROFILE,network:approval.network,programId:approval.programId,asset:approval.mint,feePayer:treasury,server:{address:merchant},origin:approval.origin,
     amount:100000n,merchantToken:'synthetic-merchant-token-0123456789',bearerToken:'synthetic-bearer-token-0123456789',publicMerchantDemo:true,
     verifyEconomicIdentity:async()=>{},reclaimJournal:{},orders,faucet:{request:async()=>new Response('{"blocked":false}')},
     ledger:{getAccount:async()=>{throw Error('no RPC allowed');}}} as unknown as RestaurantConfig;

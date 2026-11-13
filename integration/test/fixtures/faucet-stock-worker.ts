@@ -10,7 +10,7 @@ const directory=process.argv[2]!,input=JSON.parse(readFileSync(join(directory,'w
 const backend:ProvisionBackend={
   async genesis(){return input.plan.genesisHash;},
   async snapshot(){return {slot:1n,accounts:input.accounts.map((a:any)=>a?{...a,lamports:BigInt(a.lamports),data:new Uint8Array(a.data)}:null)};},
-  async rent(){return 2_039_280n;},async fee(){return 10_000n;},
+  async rent(){return BigInt(input.rent);},async fee(){return 10_000n;},
   async latest(){return {...input.lifetime,lastValidBlockHeight:BigInt(input.lifetime.lastValidBlockHeight)};},
   async finalized(){return null;},async submit(){throw Error('synthetic worker must not submit');},
 };

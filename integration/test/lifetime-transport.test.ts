@@ -16,7 +16,7 @@ let h: Harness;
 beforeEach(async () => { h = await createHarness(); });
 afterEach(async () => { await h.close(); });
 function config(fetchImpl: typeof fetch): ResourceServerConfig {
-  return { facilitatorUrl: "http://synthetic.invalid", bearerToken: KEY, network: NETWORK,
+  return { orderSigningKey: "synthetic-order-key", facilitatorUrl: "http://synthetic.invalid", bearerToken: KEY, network: NETWORK,
     programId: h.facilitator.programId, feePayer: h.facilitatorKey.address, server: h.server, asset: h.mint, amount: 100n,
     captureDeadlineSeconds: 100, refundDeadlineSeconds: 200, store: new OperationStore(mkdtempSync(join(tmpdir(), "relay-transport-"))),
     getLatestBlockhash: vi.fn(), now: () => h.ledger.now(), handler: vi.fn(), fetchImpl };

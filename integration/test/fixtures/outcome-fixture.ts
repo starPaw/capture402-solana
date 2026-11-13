@@ -10,24 +10,25 @@ export type OutcomeFixtureKeys = { payer: import("@solana/kit").KeyPairSigner; m
 export async function outcomeFixture(failure = false, lockOnly = false, action: "beer" | "salmon" = "beer", keys?: OutcomeFixtureKeys) {
   const f = createIsolatedRecoveryFixture(), [payer,merchant,sponsor] = keys ? [keys.payer,keys.merchant,keys.sponsor] : await Promise.all([generateKeyPairSigner(),generateKeyPairSigner(),generateKeyPairSigner()]);
   const mint = keys?.mint ?? NATIVE_MINT;
-  const salt = new Uint8Array(32).fill(7), payment = await paymentAddress(f.identity.programId,payer.address,salt), id = "1234567890abcdef1234567890abcdef";
+  const salt = new Uint8Array(32).fill(7), payment = await paymentAddress(f.identity.programId,payer.address,salt, 1500n), id = "1234567890abcdef1234567890abcdef";
   const common = { programId:f.identity.programId,payment,payer:payer.address,server:merchant.address,mint };
   const lifetime = { blockhash:keys?.blockhash ?? f.identity.genesisHash as any,lastValidBlockHeight:10n };
-  const unsigned = await buildTransaction({ feePayer:sponsor.address,signers:[],instructions:[await authorizeInstruction({ ...common,funder:sponsor.address,salt,maximum:100000000n,captureDeadline:1000n,refundDeadline:1100n })],lifetime });
+  const unsigned = await buildTransaction({ feePayer:sponsor.address,signers:[],instructions:[await authorizeInstruction({ authorizeUntilSlot: 1500n, ...common,funder:sponsor.address,salt,maximum:100000000n,captureDeadline:1000n,refundDeadline:1100n })],lifetime });
   const auth = await partiallySignTransaction([payer.keyPair,sponsor.keyPair],unsigned), authSignature = getSignatureFromTransaction(auth);
   const capture = await buildTransaction({ feePayer:sponsor.address,signers:[merchant],instructions:[await captureInstruction(common,action === "beer" ? 40000000n : 60000000n,false,100000000n,0n)],lifetime });
   const signed = await partiallySignTransaction([sponsor.keyPair],capture), signature = getSignatureFromTransaction(signed);
   const authEvent = { action:"authorize",label:"Budget authorized",at:"synthetic",amount:"100000000",status:"finalized",transaction:authSignature,transactionBase64:encodeTransaction(auth),receipt:{ success:true,transaction:authSignature,network:f.identity.network } };
   const event = { action,label:"Beer + Ribs",at:"synthetic",amount:action === "beer" ? "40000000" : "60000000",status:"pending",transaction:"",transactionBase64:encodeTransaction(capture) };
   const order = { id,payer:payer.address,payment,capabilityHash:"synthetic-only",scenario:"normal",createdAt:1,status:"pending",unsigned:encodeTransaction(unsigned),
-    required:{ accepts:[{ network:f.identity.network,payTo:merchant.address,asset:mint,amount:"100000000",extra:{ captureDeadline:1000,refundDeadline:1100 } }] },events:lockOnly ? [authEvent] : [authEvent,event] };
+    required:{ accepts:[{ network:f.identity.network,payTo:merchant.address,asset:mint,amount:"100000000",extra:{ protocolVersion:2, authorizeUntilSlot:"1500", feePayer:sponsor.address, captureDeadline:1000,refundDeadline:1100 } }] },events:lockOnly ? [authEvent] : [authEvent,event] };
   const persist = (path:string,value:unknown) => writeFileSync(path,typeof value === "string" ? value : JSON.stringify(value),{ mode:0o600 });
   const path = join(f.paths.orders,id+".json"),busyPath = path+".busy",lockPath = path+`.${action}.lock`;
   persist(path,order);persist(path+".authorize.lock",authEvent);persist(lockPath,event);persist(busyPath,action);
   for (const [tx,sig,operation,h] of [[auth,authSignature,"authorize","0"],[signed,signature,"capture","100000000"]] as const) {
     persist(join(f.paths.facilitator,sig+".json"),{ signature:sig,transactionBase64:encodeTransaction(tx),messageHash:messageHash(tx.messageBytes),blockhash:keys?.blockhash ?? f.identity.genesisHash,operation,payment,payer:payer.address,expectedHeld:h,expectedRefundable:"0",attempts:[{ preparedAt:"synthetic",outcome:{ result:operation === "authorize" ? "finalized-succeeded" : "unresolved",recordedAt:"synthetic" } }] });
   }
-  const data = new Uint8Array(176), addresses = getAddressEncoder(),view = new DataView(data.buffer);
+  const data = new Uint8Array(216), addresses = getAddressEncoder(),view = new DataView(data.buffer);
+  view.setBigUint64(176,1500n,true);data.set(addresses.encode(sponsor.address),184);
   data.set(DISCRIMINATOR);data.set(addresses.encode(payer.address),8);data.set(addresses.encode(merchant.address),40);data.set(addresses.encode(mint),72);data.set(salt,104);
   view.setBigUint64(136,100000000n,true);view.setBigInt64(144,1000n,true);view.setBigInt64(152,1100n,true);view.setBigUint64(160,failure ? 100000000n : action === "beer" ? 60000000n : 40000000n,true);view.setBigUint64(168,failure ? 0n : action === "beer" ? 40000000n : 60000000n,true);
   const account = { owner:f.identity.programId,executable:false,lamports:1n,data };

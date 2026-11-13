@@ -4,7 +4,8 @@ import { dirname, join, resolve } from 'node:path';
 import { appendFileSync, existsSync, readFileSync, readdirSync } from 'node:fs';
 import { solflareReceiverPatch } from './solflare-sdk-patch.mjs';
 const root = dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
-const result = await build({ entryPoints:[join(root,'browser/solflare.js')], plugins:[solflareReceiverPatch()], bundle:true, format:'esm', platform:'browser', target:'es2023', minify:true, legalComments:'linked', metafile:true, outfile:join(root,'web/solflare.js') });
+// Escape multiline strings instead of emitting dependency text with trailing spaces.
+const result = await build({ entryPoints:[join(root,'browser/solflare.js')], plugins:[solflareReceiverPatch()], bundle:true, format:'esm', platform:'browser', target:'es2023', supported:{'template-literal':false}, minify:true, legalComments:'linked', metafile:true, outfile:join(root,'web/solflare.js') });
 // Retain complete distributed dependency licenses alongside esbuild's linked notices.
 const packages = new Map();
 for (const input of Object.keys(result.metafile.inputs)) {
