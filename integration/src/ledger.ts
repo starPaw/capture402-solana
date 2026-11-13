@@ -21,7 +21,8 @@ export type FinalizedOutcome =
  *
  * - `not-submitted`: the adapter established these exact bytes were never broadcast (a
  *   send-time refusal before anything landed). The facilitator reports a non-pending failure
- *   with an empty `transaction`; a later retry of the same bytes is safe to consider fresh.
+ *   with an empty `transaction`. This classification does not release any order reservation
+ *   or authorize a retry; the service's permanent business-order journal still applies.
  * - `submitted` without a finalized outcome: the bytes reached the cluster, but their
  *   confirmation could not be established (response lost, processed/confirmed only, an
  *   already-processed refusal whose recorded status is unresolved). The facilitator reports
@@ -29,8 +30,8 @@ export type FinalizedOutcome =
  *   not-submitted, because an earlier broadcast may have landed.
  * - `submitted` with a finalized outcome: the exact signature's execution result.
  *
- * A processed or confirmed (not yet finalized) result must never be labeled finalized: v1
- * gates success on finalized (ARCHITECTURE). An ordinary transport timeout, a missing RPC
+ * A processed or confirmed (not yet finalized) result must never be labeled finalized:
+ * success requires finalized evidence. An ordinary transport timeout, a missing RPC
  * acknowledgement, or `AlreadyProcessed` must stay in the `submitted` branch, never
  * `not-submitted`.
  */

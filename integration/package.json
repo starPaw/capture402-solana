@@ -5,11 +5,12 @@
   "type": "module",
   "description": "SAC-004: minimal x402 v2 auth-capture facilitator for the SVM Auth-Capture program",
   "engines": {
-    "node": ">=22"
+    "node": ">=26.13.1 <27"
   },
   "scripts": {
     "typecheck": "tsc -p .",
     "test": "vitest run",
+    "test:agave": "node --experimental-strip-types test/agave-local.ts",
     "test:recovery:offline": "vitest run test/mvp-recovery-offline.test.ts test/reclaim.test.ts test/reclaim-offer.test.ts test/payer-recovery.test.ts test/payer-recovery-sbf.test.ts test/payer-recovery-races.test.ts test/payer-recovery-crash.test.ts test/rpc-recovery-identity.test.ts",
     "test:reclaim": "vitest run test/reclaim-offer.test.ts test/reclaim.test.ts test/rpc-ledger.test.ts test/rpc-recovery-identity.test.ts",
     "devnet": "node --experimental-strip-types src/devnet-server.ts",
@@ -24,22 +25,35 @@
     "restaurant:payer-recovery": "node --experimental-strip-types src/payer-recovery-cli.ts"
   },
   "dependencies": {
-    "@hono/node-server": "2.1.3",
-    "@solana-program/system": "0.14.1",
-    "@solana-program/token": "0.16.1",
-    "@solana/kit": "8.4.0",
+    "@hono/node-server": "2.1.8",
+    "@solana-program/system": "0.16.0",
+    "@solana-program/token": "0.18.0",
+    "@solana/kit": "8.6.0",
     "fs-ext": "2.1.1",
-    "hono": "4.13.13"
+    "hono": "4.13.18"
   },
   "devDependencies": {
     "@solana/web3.js": "1.98.4",
     "@solflare-wallet/sdk": "1.4.2",
     "@types/fs-ext": "2.0.3",
-    "@types/node": "26.6.4",
-    "esbuild": "0.27.4",
-    "litesvm": "1.5.0",
-    "typescript": "5.9.3",
-    "vitest": "5.0.3"
+    "@types/node": "26.6.6",
+    "esbuild": "0.28.2",
+    "litesvm": "1.6.2",
+    "typescript": "7.0.2",
+    "vitest": "5.1.0"
   },
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "allowScripts": {
+    "fs-ext@2.1.1": true,
+    "esbuild@0.28.2": true,
+    "bufferutil@4.2.0": true,
+    "utf-8-validate@6.0.6": true,
+    "fsevents@2.3.3": false
+  },
+  "overrides": {
+    "@solflare-wallet/sdk": {
+      "uuid": "11.1.1"
+    },
+    "jayson": "5.0.0"
+  }
 }

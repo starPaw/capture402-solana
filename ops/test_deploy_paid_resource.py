@@ -190,7 +190,7 @@ class PaidInstallationTests(unittest.TestCase):
             stack.enter_context(mock.patch.object(paid.os, 'geteuid', return_value=0))
             stack.enter_context(mock.patch.object(paid, '__file__', '/opt/capture402/controllers/' + 'a' * 40 + '/deploy_paid_resource.py'))
             stack.enter_context(mock.patch.object(paid, 'no_pending'))
-            stack.enter_context(mock.patch.object(paid, 'node_source', return_value=(Path('/trusted/node'), 'v24.20.0')))
+            stack.enter_context(mock.patch.object(paid, 'node_source', return_value=(Path('/trusted/node'), 'v26.13.1')))
             stack.enter_context(mock.patch.object(Path, 'exists', return_value=False))
             stack.enter_context(mock.patch.object(paid.pwd, 'getpwnam', side_effect=KeyError))
             stack.enter_context(mock.patch.object(paid.socket, 'socket'))
@@ -204,10 +204,11 @@ class PaidInstallationTests(unittest.TestCase):
 
     def test_missing_runtime_fails_before_namespace_mutation(self):
         with mock.patch.object(Path, 'exists', return_value=False), mock.patch.object(paid, 'run') as run:
-            with self.assertRaisesRegex(RuntimeError, 'Node 24 not found'): paid.node_source()
+            with self.assertRaisesRegex(RuntimeError, 'Node 26.13.1 not found'): paid.node_source()
         run.assert_not_called()
 
-    def test_runtime_resolution_accepts_operator_binary_and_rejects_writable_or_wrong_major(self):
+    def test_runtime_resolution_accepts_only_qualified_version_and_safe_binary(self):
+        self.assertEqual(paid.NODE_VERSION, (Path(__file__).resolve().parents[1] / '.nvmrc').read_text().strip())
         with tempfile.TemporaryDirectory() as tmp:
             executable=Path(tmp)/'node';executable.write_bytes(b'fixture');executable.chmod(0o755)
             original_path=Path
@@ -215,21 +216,23 @@ class PaidInstallationTests(unittest.TestCase):
                 return executable if str(value)=='/usr/local/bin/node' else original_path(value)
             with mock.patch.object(paid,'Path',side_effect=path), \
                     mock.patch.object(paid.pwd,'getpwnam',return_value=types.SimpleNamespace(pw_uid=os.getuid())), \
-                    mock.patch.object(paid,'run',return_value='v24.20.0') as run:
-                self.assertEqual(paid.node_source(),(executable.resolve(),'v24.20.0'))
+                    mock.patch.object(paid,'run',return_value='v26.13.1') as run:
+                self.assertEqual(paid.node_source(),(executable.resolve(),'v26.13.1'))
                 executable.chmod(0o777)
                 with self.assertRaisesRegex(RuntimeError,'unsafe installed Node'):paid.node_source()
-                executable.chmod(0o755);run.return_value='v22.1.0'
-                with self.assertRaisesRegex(RuntimeError,'Node 24 required'):paid.node_source()
+                executable.chmod(0o755)
+                for version in ('v24.20.0', 'v26.13.0', 'v26.13.2', 'v26.13.1-extra'):
+                    run.return_value = version
+                    with self.assertRaisesRegex(RuntimeError, 'Node 26.13.1 required'): paid.node_source()
 
     def test_sealed_node_copy_preserves_source_and_ignores_private_umask(self):
-        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(paid, 'run', return_value='v24.20.0'):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(paid, 'run', return_value='v26.13.1'):
             root = Path(tmp); source = root / 'installed-node'; original = b'synthetic executable fixture'
             source.write_bytes(original)
             base = root / 'paid'; base.mkdir()
             with mock.patch.object(paid, 'BASE', base):
                 previous = os.umask(0o077)
-                try:target, identity = paid.seal_node(source, 'v24.20.0')
+                try:target, identity = paid.seal_node(source, 'v26.13.1')
                 finally:os.umask(previous)
             self.assertEqual(source.read_bytes(), original)
             self.assertEqual(target.read_bytes(), original)

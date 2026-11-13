@@ -1,6 +1,6 @@
 import { browserProfile, profileAmount, profileLabel } from './payment-profile.js';
 import { wallets, onWallets, connect, walletSign, walletSignFaucetRequest, walletSignMerchantDemo, walletSignOrderSession, encodeEnvelope, decodeEnvelope, signingReport, assertDevnetPolicy } from './wallet.js';
-import { definitiveReceipt, recoveryMatches, authorizeIsolationMatches } from './receipt-state.js';
+import { definitiveReceipt, recoveryMatches } from './receipt-state.js';
 const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const explorer = (kind, value) => `https://explorer.solana.com/${kind}/${encodeURIComponent(value)}?cluster=devnet`;
@@ -25,9 +25,8 @@ const continued = () => recoveryAllowed() && order.b3Recovery.continued === true
 const renewedReclaim = () => !!order?.reclaimGeneration;
 const reclaimAttempted = () => order?.reclaimDraftState === 'stopped' || (renewedReclaim() ? localStorage.getItem(`capture402-reclaim-wallet-attempt-${order.id}`) === order.reclaimGeneration : localStorage.getItem('capture402-reclaim-wallet-attempt') === order?.id);
 const signedOffer = () => !!order && localStorage.getItem('capture402-wallet-attempt') === order.id;
-const isolatedAuthorize=()=>authorizeIsolationMatches(order?.authorizeIsolation,order);
-const canReplace = () => !!order && !stale && (isolatedAuthorize() || (!uncertain() || continued()) && order.status !== 'pending' && order.remaining === 0 &&
-  !(signedOffer() && order.status === 'draft') && (expiredDraft() || ['closed','rejected','abandoned'].includes(order.status)));
+const canReplace = () => !!order && !stale && ((!uncertain() || continued()) && order.status !== 'pending' && order.remaining === 0 &&
+  !(signedOffer() && order.status === 'draft') && (expiredDraft() || ['closed','rejected'].includes(order.status)));
 const setStatus = (message, error = false) => { $('action-status').hidden = !message; $('action-status').textContent = message; $('action-status').classList.toggle('connection-error', error); };
 const safeOperatorTransport = () => { try { assertDevnetPolicy(config); return location.protocol === 'https:' && config.configured === true; } catch { return false; } };
 const clockNow = () => anchor.clock + Math.floor((Date.now() - anchor.at) / 1000);
@@ -69,7 +68,7 @@ function renderWallet() {
 }
 function authorizeReason() {
   return faucetStopped() ? 'Check the original test-token request before new economics.' : busy ? 'One operation is already in flight.' : stale ? 'Current order state unavailable; refresh the original order.' : storedId() && !order ? 'Original order could not be restored. Keep its identifier and receipts; no replacement payment.' : !config?.configured ? 'Devnet backend provisioning required.' : uncertain() ? 'Original response unknown; inspect its signatures. No new signature or offer.' : !connection?.account ? 'Connect the payer wallet first.' : order && order.payer !== connection.account.address ? 'Connect the original payer wallet.' :
-    !order ? 'Prepare an unsigned offer and review its original terms first.' : order?.status === 'abandoned' ? 'Expired unfunded authorization archived. Explicitly prepare a new offer; original terms remain unchanged.' : order && order.status !== 'draft' ? 'Authorization submitted; original receipt below.' : signedOffer() ? 'Original wallet consent retained. Inspect the original draft; no new signature.' : expiredDraft() ? 'Unsigned offer expired. Explicitly prepare a new offer before signing.' : order?.balances?.payer && (order.balances.payer.amount === null || order.balances.payer.amount < amount('budget')) ? order.balances.payer.reason || `Payer needs ${amountText('budget')}; operator funding required.` : '';
+    !order ? 'Prepare an unsigned offer and review its original terms first.' : order && order.status !== 'draft' ? 'Authorization submitted; original receipt below.' : signedOffer() ? 'Original wallet consent retained. Inspect the original draft; no new signature.' : expiredDraft() ? 'Unsigned offer expired. Explicitly prepare a new offer before signing.' : order?.balances?.payer && (order.balances.payer.amount === null || order.balances.payer.amount < amount('budget')) ? order.balances.payer.reason || `Payer needs ${amountText('budget')}; operator funding required.` : '';
 }
 function refundReason() {
   const refundable = Number(order.refundableBaseUnits) / 1_000_000;
@@ -112,7 +111,7 @@ function render() {
   for (const key of ['authorized','captured','remaining','refunded']) $(key).textContent = order && Number.isFinite(order[key]) ? order[key].toLocaleString('en-US', { maximumFractionDigits: 6 }) : '—';
   $('refundable').textContent = order?.refundableBaseUnits !== undefined ? (Number(order.refundableBaseUnits) / 1_000_000).toLocaleString('en-US', { maximumFractionDigits: 6 }) : '—';
   const state = order?.status ?? 'idle';
-  $('payment-state').textContent = stale ? sessionLost ? 'Session expired · restore access' : 'State unavailable · paused' : isolatedAuthorize() ? 'Expired authorization preserved · new order available' : continued() ? 'Hold reclaimed · original refusal archived' : recoveryAllowed() ? 'Historical capture evidence retained · payer reclaim separate' : uncertain() ? 'Unknown response · locked' : ({ idle:'Awaiting authorization', abandoned:'Expired unfunded draft archived', draft:'Unsigned offer', active:'Finalized', closed:'Hold closed', pending:'Pending · inspect signatures', rejected:'Authorization refused' })[state] ?? state;
+  $('payment-state').textContent = stale ? sessionLost ? 'Session expired · restore access' : 'State unavailable · paused' : continued() ? 'Hold reclaimed · original refusal archived' : recoveryAllowed() ? 'Historical capture evidence retained · payer reclaim separate' : uncertain() ? 'Unknown response · locked' : ({ idle:'Awaiting authorization', draft:'Unsigned offer', active:'Finalized', closed:'Hold closed', pending:'Pending · inspect signatures', rejected:'Authorization refused' })[state] ?? state;
   $('payment-state').classList.toggle('live', !stale && !uncertain() && ['active','closed'].includes(state));
   $('released-copy').hidden = !(order?.released > 0); $('released-copy').textContent = order?.released > 0 ? `${order.released} ${browserProfile(config).assetLabel} released to payer` : 'No tokens released yet.';
   const reason = authorizeReason(); $('authorize').disabled = !!reason; $('authorize-reason').textContent = reason || `Ready: sign the exact ${amountText('budget')} offer. Settlement must finalize.`;
@@ -132,7 +131,6 @@ function render() {
   $('reclaim-description').textContent = localStorage.getItem('capture402-reclaim-uncertain') === order?.id ? 'Separate reclaim outcome UNKNOWN; retain its original signature and stop.' : order?.reclaimDraftState === 'expired-or-unavailable' ? 'Retained unsigned draft expired or unavailable. Explicit preparation requires fresh canonical finalized expiry and custody proof; nothing is signed.' : order?.reclaimDraftState === 'stopped' ? 'Reclaim consent or attempt retained; further signing and preparation stopped.' : recoveryAllowed() ? 'Reviewed source-bound pre-dispatch evidence; fresh payer consent reclaims the expired hold. Original latch remains archived; this is a new operation.' : uncertain() ? 'Original response unknown; inspect its signatures.' : stale ? 'Current order state unavailable.' : !payerMatches ? 'Connect the original payer wallet to reclaim.' : order?.actionReasons?.reclaim || 'Ready for payer-direct reclaim; the facilitator is not used.';
   document.querySelectorAll('[data-scenario]').forEach(b => { b.classList.toggle('selected', b.dataset.scenario === scenario); b.setAttribute('aria-pressed', String(b.dataset.scenario === scenario)); b.disabled = faucetStopped() || busy || !!order && !canReplace(); });
   $('new-budget').hidden = faucetStopped() || busy || !canReplace();
-  $('abandon-authorize').hidden = diagnosticOnly || busy || stale || uncertain() || !order?.authorizeAbandonEligible || !!localStorage.getItem(`capture402-signed-${order?.id}`);
   $('new-budget').textContent = expiredDraft() ? 'Replace expired unsigned offer explicitly' : 'Prepare a new offer explicitly';
   const balanceText = (role, fallback) => { const b = order?.balances?.[role]; return b ? `${role === 'payer' ? 'Payer' : 'Merchant'} test-mint balance: ${b.amount === null ? 'unavailable' : b.amount} ${b.reason}` : fallback; };
   $('payer-balance').textContent = balanceText('payer', 'Test-mint funding checked before an offer is prepared.');
@@ -176,9 +174,9 @@ function renderLab() {
   else if (stale) choose('Current state unavailable', 'Actions are paused. Amounts are last observed, not current. Observe this original order or open the illustration in a separate tab. Keep recovery information.', 'Read-only observation', 'Observe original state', 'refresh');
   else if (!config?.configured) choose('Live lab unavailable', 'Backend provisioning is required. Keep any original order; the illustration is available in a separate tab.', 'No payment available', 'Live lab unavailable', '');
   else if (storedId() && !order) choose('Original order unavailable', 'Keep its identifier and receipts. Wallet connection cannot recreate session access. Do not create a replacement payment.', 'Read-only observation', 'Observe original state', 'refresh');
-  else if (reclaimUnknown || uncertain() && !recoveryAllowed() && !isolatedAuthorize()) choose('UNKNOWN · keep this order', 'The operation may have executed. Keep original signed bytes, signatures and locks. Observe original evidence; do not pay again.', 'Read-only observation', 'Observe original state', 'refresh');
-  else if (order?.status === 'pending' && !isolatedAuthorize()) choose('Pending · await finalized evidence', 'Inspect the original signature. No new authorization or merchant action is eligible while this operation is pending.', 'Read-only observation', 'Observe original state', 'refresh');
-  else if (canReplace()) choose(order.status === 'closed' ? 'Completed · hold closed' : 'Original preserved', isolatedAuthorize() ? 'Original outcome remains UNKNOWN and its reserve is retained. Only the existing verified isolation permits an explicit unsigned successor.' : 'Inspect original receipts. You may explicitly prepare a separate offer under new terms; this does not reset the original deadline.', 'Payer · unsigned preparation only', connection?.account ? $('new-budget').textContent : 'Connect wallet for a new offer', connection?.account ? 'new-budget' : 'connect-wallet');
+  else if (reclaimUnknown || uncertain() && !recoveryAllowed()) choose('UNKNOWN · keep this order', 'The operation may have executed. Keep original signed bytes, signatures and locks. Observe original evidence; do not pay again.', 'Read-only observation', 'Observe original state', 'refresh');
+  else if (order?.status === 'pending') choose('Pending · await finalized evidence', 'Inspect the original signature. No new authorization or merchant action is eligible while this operation is pending.', 'Read-only observation', 'Observe original state', 'refresh');
+  else if (canReplace()) choose(order.status === 'closed' ? 'Completed · hold closed' : 'Original preserved', 'Inspect original receipts. You may explicitly prepare a separate offer under new terms; this does not reset the original deadline.', 'Payer · unsigned preparation only', connection?.account ? $('new-budget').textContent : 'Connect wallet for a new offer', connection?.account ? 'new-budget' : 'connect-wallet');
   else if (!connection?.account || order && connection.account.address !== order.payer) choose('Connect the payer wallet', order ? 'Use the original payer wallet. This order and its immutable terms stay selected.' : 'Connection moves no tokens. Then prepare an unsigned offer to review the actual terms.', 'Payer · connection only', 'Connect wallet', 'connect-wallet');
   else if (!order && /test.mint|funding required|needs 100|token account missing/i.test(lastActionError)) choose('Test tokens required', lastActionError + ' Devnet SOL is also needed for reclaim fees.', 'Payer · separate message consent if available', !$('claim-test-tokens').disabled ? claimLabel() : 'Inspect funding requirements', !$('claim-test-tokens').disabled ? 'claim-test-tokens' : 'advanced');
   else if (!order) choose('Prepare original terms', `Request an unsigned ${amountText('budget')} offer, then review its original deadline before a separate wallet signature.`, 'Payer · unsigned preparation only', 'Prepare unsigned offer', 'prepare-offer');
@@ -198,7 +196,6 @@ function renderLab() {
     else if (eligible) choose('Merchant authorization required', merchantReason(eligible), 'Separate merchant operator', 'Open operator tools', 'operator-tools');
     else choose('Wait / inspect original evidence', order.remaining > 0 ? $('reclaim-description').textContent + ' The original deadline stays fixed; expiry alone returns nothing.' : 'Inspect original receipts and eligibility in Advanced. Do not repeat an unresolved operation.', 'Read-only observation', 'Observe original state', 'refresh');
   }
-  if (!$('abandon-authorize').hidden && !busy && !reading && !stale) choose('Expired unfunded draft eligible for archive', 'Only this selected draft has verified archive eligibility. Preserve its original consent; prepare any successor separately.', 'Payer · explicit archive, no signing', 'Archive selected expired unfunded draft', 'abandon-authorize');
   $('next-step').textContent=title; $('readiness').textContent=message; $('next-actor').textContent=actor; $('next-action').textContent=label;
   $('next-reason').textContent = diagnosticOnly ? 'Signing-only diagnostic: no transaction is submitted.' : 'Each step is explicit. Observe refreshes the original state; it does not retry a payment.';
   nextTarget=target;
@@ -242,7 +239,7 @@ async function run(fn, renewalMessage = '', refreshAfter = true) {
     await fn(); if(refreshAfter) await refresh();
     const preparedRenewal = renewalMessage && recoveryAllowed() && renewedReclaim() && order.reclaimDraftState === 'ready' && !reclaimAttempted() && order.status !== 'pending' && order.remaining > 0 && order.actions?.reclaim &&
       localStorage.getItem('capture402-reclaim-uncertain') !== order.id;
-    setStatus(preparedRenewal ? renewalMessage : isolatedAuthorize() ? 'Successful authorization effect excluded for the expired original. Outcome UNKNOWN and reserve retained; explicitly prepare one new offer.' : order?.status === 'abandoned' ? 'Selected expired unfunded authorization archived; no funds moved. Prepare a new offer separately.' : continued() ? 'Payer reclaim finalized. Historical capture evidence retained; a new scenario may be explicitly prepared.' : recoveryAllowed() && !reclaimAttempted() && order.status !== 'pending' && localStorage.getItem('capture402-reclaim-uncertain') !== order.id ? order.reclaimDraftState === 'expired-or-unavailable' ? 'Historical capture evidence retained. Unsigned reclaim expired or unavailable; explicit preparation requires fresh finalized proof.' : 'Historical capture evidence retained. Separate payer reclaim requires fresh consent and a finalized receipt.' : uncertain() || order?.status === 'pending' ? 'Original operation pending or unknown. All new operations stopped; inspect original signatures.' : 'Original state refreshed. Only finalized receipts confirm settlement.');
+    setStatus(preparedRenewal ? renewalMessage : continued() ? 'Payer reclaim finalized. Historical capture evidence retained; a new scenario may be explicitly prepared.' : recoveryAllowed() && !reclaimAttempted() && order.status !== 'pending' && localStorage.getItem('capture402-reclaim-uncertain') !== order.id ? order.reclaimDraftState === 'expired-or-unavailable' ? 'Historical capture evidence retained. Unsigned reclaim expired or unavailable; explicit preparation requires fresh finalized proof.' : 'Historical capture evidence retained. Separate payer reclaim requires fresh consent and a finalized receipt.' : uncertain() || order?.status === 'pending' ? 'Original operation pending or unknown. All new operations stopped; inspect original signatures.' : 'Original state refreshed. Only finalized receipts confirm settlement.');
   }
   catch (error) { lastActionError = error.message; setStatus(error.message + (diagnosticOnly && signingReport() ? '\n\n' + JSON.stringify(signingReport(),null,2) : ''), true); try { await refresh(); } catch { stale = true; accessId = ''; } }
   finally { busy = false; render(); }
@@ -332,7 +329,6 @@ $('connect-wallet').onclick = () => { manualWalletChoice = true; showWallets(); 
 $('close-wallet').onclick = () => $('wallet-dialog').close();
 async function prepareOffer() {
   if (!connection?.account) throw new Error('Connect the payer wallet first.');
-  if(isolatedAuthorize())localStorage.setItem(`capture402-isolation-archive-${order.id}`,JSON.stringify({originalLatch:localStorage.getItem('capture402-uncertain'),originalWalletAttempt:localStorage.getItem('capture402-wallet-attempt'),evidence:order.authorizeIsolation,acknowledgedAt:new Date().toISOString()}));
   const { response, data } = await request('/api/orders', { method:'POST', headers:{ 'Content-Type':'application/json' }, body:JSON.stringify({ payer:connection.account.address, scenario }) }, [402]);
   const header = response.headers.get('PAYMENT-REQUIRED');
   if (!header || !data.order || !data.unsigned) throw new Error(data.error || 'No real unsigned budget offer could be prepared.');
@@ -404,14 +400,6 @@ $('renew-reclaim').onclick = () => {
     // consume the owner's signing window. Preflight and durable consent still recheck.
     order={...order,reclaimGeneration:hash,reclaimDraftState:'ready',reclaimPreparation:false};
   }, 'Previous reclaim wire archived after finalized no-effect proof. Fresh unsigned draft prepared; request signature separately.', false);
-};
-$('abandon-authorize').onclick = () => {
-  if($('abandon-authorize').hidden)return;
-  return run(async()=>{
-    const {data}=await request(`/api/orders/${order.id}/abandon-authorize`,{method:'POST'});
-    if(data.abandoned!==true || data.proof?.kind!=='expired-unfunded-authorize' || data.proof.payment!==order.payment)throw Error('Abandonment proof differs; no new signature or offer.');
-    setStatus('Expired unfunded draft archived. No funds moved; prepare a new offer separately.');
-  });
 };
 $('reclaim').onclick = () => {
   if ($('reclaim').disabled) return;

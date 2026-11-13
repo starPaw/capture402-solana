@@ -3,21 +3,22 @@ use litesvm::{
     types::{FailedTransactionMetadata, TransactionResult},
     LiteSVM,
 };
-use solana_sdk::{
-    account::Account,
-    clock::Clock,
-    instruction::{AccountMeta, Instruction},
-    program_option::COption,
-    program_pack::Pack,
-    pubkey::Pubkey,
-    signature::{Keypair, Signer},
-    system_instruction, system_program,
-    transaction::{Transaction, TransactionError},
-};
-use spl_token::state::{Account as TokenAccount, AccountState, Mint};
+use solana_account::Account;
+use solana_address::Address as Pubkey;
+use solana_clock::Clock;
+use solana_instruction::{AccountMeta, Instruction};
+use solana_keypair::Keypair;
+use solana_program_option::COption;
+use solana_program_pack::Pack;
+use solana_signer::Signer;
+use solana_system_interface::{instruction as system_instruction, program as system_program};
+use solana_transaction::Transaction;
+use solana_transaction_error::TransactionError;
+use spl_token_interface::state::{Account as TokenAccount, AccountState, Mint};
 use svm_auth_capture::{authorize_data, payment_address, Payment, ID, PAYMENT_LEN, SEED};
 
 const NOW: i64 = 1_000;
+const E: u64 = 20;
 const DC: i64 = 1_100;
 const DR: i64 = 1_200;
 const M: u64 = 100;
@@ -39,8 +40,12 @@ impl Fixture {
     fn new() -> Self {
         let mut svm = LiteSVM::new();
         // Fail loudly if the binary is missing; never substitute a native processor.
-        svm.add_program_from_file(ID, "target/deploy/svm_auth_capture.so")
-            .unwrap();
+        svm.add_program_from_file(
+            ID,
+            std::env::var("CAPTURE402_TEST_SBF")
+                .unwrap_or_else(|_| "target/deploy/svm_auth_capture.so".into()),
+        )
+        .unwrap();
         let payer = Keypair::new();
         let sponsor = Keypair::new();
         let server = Keypair::new();
@@ -57,10 +62,10 @@ impl Fixture {
                 &mint,
                 svm.minimum_balance_for_rent_exemption(Mint::LEN),
                 Mint::LEN as u64,
-                &spl_token::id(),
+                &spl_token_interface::id(),
             ),
-            spl_token::instruction::initialize_mint2(
-                &spl_token::id(),
+            spl_token_interface::instruction::initialize_mint2(
+                &spl_token_interface::id(),
                 &mint,
                 &payer.pubkey(),
                 Some(&payer.pubkey()),
@@ -68,8 +73,8 @@ impl Fixture {
             )
             .unwrap(),
             create_ata(&sponsor.pubkey(), &payer.pubkey(), &mint),
-            spl_token::instruction::mint_to(
-                &spl_token::id(),
+            spl_token_interface::instruction::mint_to(
+                &spl_token_interface::id(),
                 &mint,
                 &source,
                 &payer.pubkey(),
@@ -86,7 +91,7 @@ impl Fixture {
         );
         svm.send_transaction(tx).unwrap();
         let salt = [7; 32];
-        let payment = payment_address(&ID, &payer.pubkey(), &salt).0;
+        let payment = payment_address(&ID, &payer.pubkey(), &salt, E).0;
         let vault = ata(&payment, &mint);
         let mut f = Self {
             svm,
@@ -107,6 +112,7 @@ impl Fixture {
     fn time(&mut self, unix_timestamp: i64) {
         let mut clock = self.svm.get_sysvar::<Clock>();
         clock.unix_timestamp = unix_timestamp;
+        clock.slot = 10;
         self.svm.set_sysvar(&clock);
         assert_eq!(
             self.svm.get_sysvar::<Clock>().unix_timestamp,
@@ -126,13 +132,13 @@ impl Fixture {
                 AccountMeta::new(self.vault, false),
                 AccountMeta::new(self.sponsor.pubkey(), true),
                 AccountMeta::new_readonly(system_program::id(), false),
-                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_token_interface::id(), false),
                 AccountMeta::new_readonly(
-                    spl_associated_token_account_client::program::id(),
+                    spl_associated_token_account_interface::program::id(),
                     false,
                 ),
             ],
-            data: authorize_data(self.salt, M, DC, DR),
+            data: authorize_data(self.salt, M, DC, DR, E),
         }
     }
 
@@ -145,7 +151,7 @@ impl Fixture {
                 AccountMeta::new_readonly(self.mint, false),
                 AccountMeta::new(self.vault, false),
                 AccountMeta::new(self.source, false),
-                AccountMeta::new_readonly(spl_token::id(), false),
+                AccountMeta::new_readonly(spl_token_interface::id(), false),
             ],
             data: vec![1],
         }
@@ -252,7 +258,9 @@ impl Fixture {
                 capture_deadline: DC,
                 refund_deadline: DR,
                 held: M,
-                refundable: 0
+                refundable: 0,
+                authorize_until_slot: E,
+                rent_refund_recipient: self.sponsor.pubkey(),
             }
         );
     }
@@ -268,19 +276,19 @@ impl Fixture {
 }
 
 fn ata(owner: &Pubkey, mint: &Pubkey) -> Pubkey {
-    spl_associated_token_account_client::address::get_associated_token_address_with_program_id(
+    spl_associated_token_account_interface::address::get_associated_token_address_with_program_id(
         owner,
         mint,
-        &spl_token::id(),
+        &spl_token_interface::id(),
     )
 }
 
 fn create_ata(funder: &Pubkey, owner: &Pubkey, mint: &Pubkey) -> Instruction {
-    spl_associated_token_account_client::instruction::create_associated_token_account_idempotent(
+    spl_associated_token_account_interface::instruction::create_associated_token_account_idempotent(
         funder,
         owner,
         mint,
-        &spl_token::id(),
+        &spl_token_interface::id(),
     )
 }
 
@@ -305,7 +313,7 @@ fn authorize_exact_deposit_terms_and_separate_rent() {
 fn insufficient_authorize_rolls_back_initialization_and_rent() {
     let mut f = Fixture::new();
     let mut ix = f.authorize();
-    ix.data = authorize_data(f.salt, 1_001, DC, DR);
+    ix.data = authorize_data(f.salt, 1_001, DC, DR, E);
     f.fails(&[ix], Some(0));
     assert!(f.svm.get_account(&f.payment).is_none());
     assert!(f.svm.get_account(&f.vault).is_none());
@@ -315,8 +323,8 @@ fn insufficient_authorize_rolls_back_initialization_and_rent() {
 #[test]
 fn failed_token_cpi_after_authorize_rolls_back_entire_transaction() {
     let mut f = Fixture::new();
-    let extra = spl_token::instruction::transfer_checked(
-        &spl_token::id(),
+    let extra = spl_token_interface::instruction::transfer_checked(
+        &spl_token_interface::id(),
         &f.source,
         &f.mint,
         &f.vault,
@@ -336,7 +344,7 @@ fn failed_token_cpi_after_authorize_rolls_back_entire_transaction() {
         .meta
         .logs
         .iter()
-        .any(|line| line.starts_with(&format!("Program {} failed", spl_token::id()))));
+        .any(|line| line.starts_with(&format!("Program {} failed", spl_token_interface::id()))));
     assert!(f.svm.get_account(&f.payment).is_none());
     assert!(f.svm.get_account(&f.vault).is_none());
 }
@@ -374,12 +382,18 @@ fn duplicate_conflicting_and_transaction_duplicate_authorizations_collect_once()
 #[test]
 fn alternate_bump_is_rejected() {
     let mut f = Fixture::new();
-    let canonical = payment_address(&ID, &f.payer.pubkey(), &f.salt).1;
+    let canonical = payment_address(&ID, &f.payer.pubkey(), &f.salt, E).1;
     let alternate = (0..canonical)
         .rev()
         .find_map(|bump| {
             Pubkey::create_program_address(
-                &[SEED, f.payer.pubkey().as_ref(), &f.salt, &[bump]],
+                &[
+                    SEED,
+                    f.payer.pubkey().as_ref(),
+                    &f.salt,
+                    &E.to_le_bytes(),
+                    &[bump],
+                ],
                 &ID,
             )
             .ok()
@@ -412,6 +426,8 @@ fn foreign_malformed_and_initialized_payment_accounts_fail_closed() {
                     refund_deadline: DR,
                     held: 0,
                     refundable: 0,
+                    authorize_until_slot: E,
+                    rent_refund_recipient: f.sponsor.pubkey(),
                 }
                 .encode(),
             ),
@@ -451,8 +467,8 @@ fn wrong_programs_mints_atas_authorities_and_aliases_fail() {
                 a.owner = spl_token_2022_id();
                 f.svm.set_account(f.mint, a).unwrap();
             }
-            8 => ix.accounts[7].pubkey = spl_token::id(),
-            9 => ix.accounts[9].pubkey = spl_token::id(),
+            8 => ix.accounts[7].pubkey = spl_token_interface::id(),
+            9 => ix.accounts[9].pubkey = spl_token_interface::id(),
             10 => {
                 let mut a = f.svm.get_account(&f.source).unwrap();
                 a.owner = system_program::id();
@@ -509,13 +525,42 @@ fn payer_and_creation_funder_signatures_are_required() {
 
 #[test]
 fn plain_pda_and_ata_lamport_prefunding_does_not_initialize_or_block() {
-    for lamports in [1, 20_000_000] {
+    for kind in 0..3 {
         let mut f = Fixture::new();
+        let lamports = match kind {
+            0 => 1,
+            1 => f.svm.minimum_balance_for_rent_exemption(0),
+            _ => 20_000_000,
+        };
         let funding = [
             system_instruction::transfer(&f.sponsor.pubkey(), &f.payment, lamports),
             system_instruction::transfer(&f.sponsor.pubkey(), &f.vault, lamports),
         ];
-        f.send(&funding, None).unwrap();
+        if kind == 0 {
+            // The current runtime rejects newly created under-rent accounts. Still
+            // exercise legacy dust by injecting pre-existing system accounts.
+            let before = f.account_snapshot();
+            let err = f.send(&funding, None).unwrap_err();
+            assert!(matches!(
+                err.err,
+                TransactionError::InsufficientFundsForRent { .. }
+            ));
+            assert_eq!(f.account_snapshot(), before);
+            for address in [f.payment, f.vault] {
+                f.svm
+                    .set_account(
+                        address,
+                        Account {
+                            lamports,
+                            owner: system_program::id(),
+                            ..Account::default()
+                        },
+                    )
+                    .unwrap();
+            }
+        } else {
+            f.send(&funding, None).unwrap();
+        }
         let p = f.svm.get_account(&f.payment).unwrap();
         assert_eq!(p.owner, system_program::id());
         assert!(p.data.is_empty());
@@ -544,8 +589,8 @@ fn unsolicited_vault_tokens_remain_surplus_through_reclaim() {
         None,
     )
     .unwrap();
-    let transfer = spl_token::instruction::transfer_checked(
-        &spl_token::id(),
+    let transfer = spl_token_interface::instruction::transfer_checked(
+        &spl_token_interface::id(),
         &f.source,
         &f.mint,
         &f.vault,
@@ -622,7 +667,7 @@ fn reclaim_succeeds_at_dc_plus_one_with_server_absent() {
     assert!(f.svm.get_account(&f.server.pubkey()).is_none());
     // Rebuild the instruction from persistent fields, without an application journal.
     let state = f.state();
-    let payment = payment_address(&ID, &state.payer, &state.salt).0;
+    let payment = payment_address(&ID, &state.payer, &state.salt, E).0;
     let mut ix = Instruction {
         program_id: ID,
         accounts: vec![
@@ -631,7 +676,7 @@ fn reclaim_succeeds_at_dc_plus_one_with_server_absent() {
             AccountMeta::new_readonly(state.mint, false),
             AccountMeta::new(ata(&payment, &state.mint), false),
             AccountMeta::new(ata(&state.payer, &state.mint), false),
-            AccountMeta::new_readonly(spl_token::id(), false),
+            AccountMeta::new_readonly(spl_token_interface::id(), false),
         ],
         data: vec![1],
     };
@@ -702,8 +747,8 @@ fn frozen_reassigned_wrong_mint_owner_or_destination_preserves_hold() {
         let mut ix = f.reclaim();
         match kind {
             0 => {
-                let freeze = spl_token::instruction::freeze_account(
-                    &spl_token::id(),
+                let freeze = spl_token_interface::instruction::freeze_account(
+                    &spl_token_interface::id(),
                     &f.source,
                     &f.mint,
                     &f.payer.pubkey(),
@@ -713,11 +758,11 @@ fn frozen_reassigned_wrong_mint_owner_or_destination_preserves_hold() {
                 f.send(&[freeze], Some(0)).unwrap();
             }
             1 => {
-                let assign = spl_token::instruction::set_authority(
-                    &spl_token::id(),
+                let assign = spl_token_interface::instruction::set_authority(
+                    &spl_token_interface::id(),
                     &f.source,
                     Some(&f.outsider.pubkey()),
-                    spl_token::instruction::AuthorityType::AccountOwner,
+                    spl_token_interface::instruction::AuthorityType::AccountOwner,
                     &f.payer.pubkey(),
                     &[],
                 )
@@ -747,8 +792,8 @@ fn missing_payer_ata_requires_atomic_repair_without_redirect() {
     let other = ata(&f.outsider.pubkey(), &f.mint);
     let setup = [
         create_ata(&f.sponsor.pubkey(), &f.outsider.pubkey(), &f.mint),
-        spl_token::instruction::transfer_checked(
-            &spl_token::id(),
+        spl_token_interface::instruction::transfer_checked(
+            &spl_token_interface::id(),
             &f.source,
             &f.mint,
             &other,
@@ -758,8 +803,8 @@ fn missing_payer_ata_requires_atomic_repair_without_redirect() {
             6,
         )
         .unwrap(),
-        spl_token::instruction::close_account(
-            &spl_token::id(),
+        spl_token_interface::instruction::close_account(
+            &spl_token_interface::id(),
             &f.source,
             &f.payer.pubkey(),
             &f.payer.pubkey(),
@@ -770,11 +815,8 @@ fn missing_payer_ata_requires_atomic_repair_without_redirect() {
     f.send(&setup, Some(0)).unwrap();
     f.time(DC);
     f.fails(&[f.reclaim()], Some(0));
-    // LiteSVM retains a zero-lamport System placeholder after Token CloseAccount.
-    let closed = f.svm.get_account(&f.source).unwrap();
-    assert_eq!(closed.owner, system_program::id());
-    assert_eq!(closed.lamports, 0);
-    assert!(closed.data.is_empty());
+    // The current runtime removes the zero-lamport account after Token CloseAccount.
+    assert!(f.svm.get_account(&f.source).is_none());
     let repair = create_ata(&f.sponsor.pubkey(), &f.payer.pubkey(), &f.mint);
     // A later failure rolls even the explicit ATA repair back.
     let mut bad = f.reclaim();
@@ -791,8 +833,8 @@ fn repaired_frozen_destination_can_retry_without_consuming_hold() {
     let mut f = Fixture::new();
     f.authorized();
     f.time(DC);
-    let freeze = spl_token::instruction::freeze_account(
-        &spl_token::id(),
+    let freeze = spl_token_interface::instruction::freeze_account(
+        &spl_token_interface::id(),
         &f.source,
         &f.mint,
         &f.payer.pubkey(),
@@ -801,8 +843,8 @@ fn repaired_frozen_destination_can_retry_without_consuming_hold() {
     .unwrap();
     f.send(&[freeze], Some(0)).unwrap();
     f.fails(&[f.reclaim()], Some(0));
-    let thaw = spl_token::instruction::thaw_account(
-        &spl_token::id(),
+    let thaw = spl_token_interface::instruction::thaw_account(
+        &spl_token_interface::id(),
         &f.source,
         &f.mint,
         &f.payer.pubkey(),
@@ -815,7 +857,7 @@ fn repaired_frozen_destination_can_retry_without_consuming_hold() {
 }
 
 #[test]
-fn persistent_terms_rent_and_vault_survive_and_no_close_reset_opcode_exists() {
+fn terms_and_rent_survive_reclaim_and_malformed_cleanup_accounts() {
     let mut f = Fixture::new();
     f.authorized();
     let original = f.state();
@@ -845,16 +887,16 @@ fn invalid_deadline_profile_asset_amount_and_encoding_fail_atomically() {
         let mut f = Fixture::new();
         let mut ix = f.authorize();
         match kind {
-            0 => ix.data = authorize_data(f.salt, 0, DC, DR),
-            1 => ix.data = authorize_data(f.salt, M, NOW, DR),
-            2 => ix.data = authorize_data(f.salt, M, 0, DR),
-            3 => ix.data = authorize_data(f.salt, M, DC, DC - 1),
-            4 => ix.data = authorize_data(f.salt, M, -1, DR),
-            5 => ix.data = authorize_data(f.salt, M, DC, i64::MIN),
-            6 => ix.data[1] = 2,
+            0 => ix.data = authorize_data(f.salt, 0, DC, DR, E),
+            1 => ix.data = authorize_data(f.salt, M, NOW, DR, E),
+            2 => ix.data = authorize_data(f.salt, M, 0, DR, E),
+            3 => ix.data = authorize_data(f.salt, M, DC, DC - 1, E),
+            4 => ix.data = authorize_data(f.salt, M, -1, DR, E),
+            5 => ix.data = authorize_data(f.salt, M, DC, i64::MIN, E),
+            6 => ix.data[1] = 1,
             7 => ix.data[2] = 1,
             8 => ix.data[3] = 1,
-            9 => ix.accounts[3].pubkey = spl_token::native_mint::id(),
+            9 => ix.accounts[3].pubkey = spl_token_interface::native_mint::id(),
             10 => {
                 ix.data.pop();
             }
@@ -872,7 +914,7 @@ fn invalid_deadline_profile_asset_amount_and_encoding_fail_atomically() {
 fn integer_boundaries_are_checked_without_narrowing_or_overflow() {
     let mut f = Fixture::new();
     let mut ix = f.authorize();
-    ix.data = authorize_data(f.salt, u64::MAX, DC, DR);
+    ix.data = authorize_data(f.salt, u64::MAX, DC, DR, E);
     f.fails(std::slice::from_ref(&ix), Some(0));
     // Reach vault addition overflow with otherwise sufficient source units.
     f.edit_token(f.source, |s| s.amount = u64::MAX);
@@ -894,7 +936,7 @@ fn integer_boundaries_are_checked_without_narrowing_or_overflow() {
     Mint::pack(mint, &mut asset.data).unwrap();
     f.svm.set_account(f.mint, asset).unwrap();
     let mut ix = f.authorize();
-    ix.data = authorize_data(f.salt, u64::MAX, i64::MAX - 1, i64::MAX);
+    ix.data = authorize_data(f.salt, u64::MAX, i64::MAX - 1, i64::MAX, E);
     f.send(&[ix], Some(0)).unwrap();
     assert_eq!(f.state().held, u64::MAX);
     assert_eq!(f.amount(f.source), 0);
@@ -957,7 +999,7 @@ fn equal_deadlines_including_i64_max_authorize_and_reclaim() {
     for dc in [DC, i64::MAX] {
         let mut f = Fixture::new();
         let mut ix = f.authorize();
-        ix.data = authorize_data(f.salt, M, dc, dc);
+        ix.data = authorize_data(f.salt, M, dc, dc, E);
         f.send(&[ix], Some(0)).unwrap();
         let original = f.state(); // Also exercises Payment::decode with Dr == Dc.
         assert_eq!(
@@ -1014,7 +1056,7 @@ fn authorize_prepared_and_signed_before_dc_rejects_when_executed_at_dc() {
         err.err,
         TransactionError::InstructionError(
             0,
-            solana_sdk::instruction::InstructionError::InvalidArgument
+            solana_instruction_error::InstructionError::InvalidArgument
         )
     );
     assert!(err
@@ -1102,7 +1144,7 @@ fn pending_authorizations_and_reclaims_transfer_once_in_either_order() {
             err.err,
             TransactionError::InstructionError(
                 0,
-                solana_sdk::instruction::InstructionError::AccountAlreadyInitialized
+                solana_instruction_error::InstructionError::AccountAlreadyInitialized
             )
         );
         assert_eq!(f.account_snapshot(), before);
@@ -1140,7 +1182,7 @@ fn pending_authorizations_and_reclaims_transfer_once_in_either_order() {
             err.err,
             TransactionError::InstructionError(
                 0,
-                solana_sdk::instruction::InstructionError::InvalidArgument
+                solana_instruction_error::InstructionError::InvalidArgument
             )
         );
         assert_eq!(f.account_snapshot(), before);

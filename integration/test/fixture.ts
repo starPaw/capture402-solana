@@ -1,7 +1,11 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { initializeV2OrderJournal, V2OrderJournal } from "../src/v2-order-journal.ts";
+import { sealOrderTerms } from "../src/order-terms.ts";
 // Local SVM-backed fixture: LiteSVM executes the actual SBF binary built by the existing
 // component runner. No native processor or mocked program is substituted.
-import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { fileURLToPath } from "node:url";
 import { serve, type ServerType } from "@hono/node-server";
@@ -10,6 +14,7 @@ import {
   generateKeyPairSigner,
   getCompiledTransactionMessageDecoder,
   getSignatureFromTransaction,
+  getTransactionDecoder,
   type Instruction,
   type KeyPairSigner,
   lamports,
@@ -33,6 +38,7 @@ import {
   authorizeInstruction,
   authorizePayload,
   buildTransaction,
+  encodeTransaction,
   captureInstruction,
   capturePayload,
   type Lifetime,
@@ -68,7 +74,8 @@ export class LiteSvmLedger implements Ledger {
   /** Throw before broadcasting (nothing lands) or after landing (response lost). */
   failSubmit?: "before-landing" | "after-landing";
 
-  constructor(readonly svm: LiteSVM) {}
+  readonly svm: LiteSVM;
+  constructor(svm: LiteSVM) { this.svm = svm; }
 
   /** Test seam: runs before a `getAccount` read, so a test can land a competing transaction at an exact point in a preflight. */
   beforeRead?: (address: Address) => void | Promise<void>;
@@ -82,6 +89,12 @@ export class LiteSvmLedger implements Ledger {
     const a = this.svm.getAccount(address);
     if (!a.exists) return null;
     return { owner: a.programAddress, data: new Uint8Array(a.data), lamports: a.lamports, executable: a.executable };
+  }
+
+  async getFinalizedTransaction(signature: string) {
+    const original = this.submissions.find(item => item.signature === signature);
+    return original?.status === "succeeded" ? { kind: "ok", slot: this.svm.getClock().slot,
+      transactionBase64: encodeTransaction(original.transaction) } : { kind: "unavailable" };
   }
 
   /** Local fixture fee schedule; production quotes the exact message through RPC. */
@@ -181,7 +194,12 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
   let mint = mintKey.address;
   const ledger = new LiteSvmLedger(svm);
   if(identities)Reflect.set(ledger,"network",network);
-  const facilitator = new Facilitator({ network, programId: programId, feePayer: facilitatorKey, ledger, ...feeBounds });
+  const orderDirectory = mkdtempSync(join(tmpdir(), "capture402-orders-v2-"));
+  const orderPath = join(orderDirectory, "journal");
+  const orderEnrollment = initializeV2OrderJournal(orderPath, { namespace: "synthetic-orders", network, genesisHash: server.address,
+    merchant: server.address, programId, providerId: "synthetic-svm" });
+  const orderConfig = { orderKey: "synthetic-order-key", orderJournal: new V2OrderJournal(orderPath, orderEnrollment) };
+  const facilitator = new Facilitator({ ...orderConfig, network, programId: programId, feePayer: facilitatorKey, ledger, ...feeBounds });
   const app = createApp(facilitator);
   const server_: ServerType = await new Promise((resolve, reject) => {
     const s = serve({ fetch: app.fetch, port: 0, hostname: "127.0.0.1" }, () => {
@@ -192,7 +210,7 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
   });
   const url = `http://127.0.0.1:${(server_.address() as AddressInfo).port}`;
 
-  const lifetime = (): Lifetime => ({ blockhash: svm.latestBlockhash(), lastValidBlockHeight: 1_000_000n });
+  const lifetime = (): Lifetime => ({ blockhash: svm.latestBlockhash(), lastValidBlockHeight: 1_000_000n, contextSlot: 0n });
 
   // LiteSVM accepts only the latest blockhash, so builders never expire it implicitly: prepared
   // transactions stay valid until a test explicitly calls `svm.expireBlockhash()`.
@@ -244,11 +262,12 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
   const setTime = (t: bigint) => {
     const clock = svm.getClock();
     clock.unixTimestamp = t;
+    clock.slot = 0n;
     svm.setClock(clock);
   };
   setTime(NOW);
 
-  const requirements = (over: Partial<PaymentRequirements> = {}, extra: Record<string, unknown> = {}): PaymentRequirements => ({
+  const requirements = (over: Partial<PaymentRequirements> = {}, extra: Record<string, unknown> = {}): PaymentRequirements => sealOrderTerms({
     scheme: "auth-capture",
     network,
     amount: M.toString(),
@@ -257,6 +276,7 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
     maxTimeoutSeconds: 60,
     ...over,
     extra: {
+      protocolVersion: 2, authorizeUntilSlot: "1500", orderId: randomBytes(32).toString("hex"),
       paymentFlow: "escrow",
       captureDeadline: Number(DC),
       refundDeadline: Number(DR),
@@ -264,10 +284,10 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
       feePayer: facilitatorKey.address,
       ...extra,
     },
-  });
+  }, orderConfig.orderKey);
 
   /** A complete x402 v2 facilitator request body; `accepted` mirrors the requirements. */
-  const body = (payload: Record<string, unknown>, req: PaymentRequirements = requirements()) => ({
+  const body = (payload: Record<string, unknown>, req: PaymentRequirements = requirements({}, {orderId: createHash("sha256").update(typeof payload.transaction === "string" ? (() => { try { return Buffer.from(getTransactionDecoder().decode(Buffer.from(payload.transaction as string,"base64")).messageBytes); } catch { return payload.transaction as string; } })() : JSON.stringify(payload)).digest("hex")})) => ({
     x402Version: 2,
     paymentPayload: { x402Version: 2, resource: { url: "https://resource.example/metered" }, accepted: req, payload },
     paymentRequirements: req,
@@ -283,6 +303,7 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
 
   const signedAuthorize = async (o: {
     salt: Uint8Array;
+    authorizeUntilSlot?: bigint;
     maximum?: bigint;
     dc?: bigint;
     dr?: bigint;
@@ -299,6 +320,7 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
       mint: o.mint ?? mint,
       funder: facilitatorKey.address,
       salt: o.salt,
+      authorizeUntilSlot: o.authorizeUntilSlot ?? 1500n,
       maximum: o.maximum ?? M,
       captureDeadline: o.dc ?? DC,
       refundDeadline: o.dr ?? DR,
@@ -311,7 +333,7 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
     });
   };
 
-  const paymentFor = (salt: Uint8Array) => paymentAddress(programId, payer.address, salt);
+  const paymentFor = (salt: Uint8Array) => paymentAddress(programId, payer.address, salt, 1500n);
   const stored = async (payment: Address) => ({
     programId: programId,
     payment,
@@ -378,9 +400,10 @@ export async function createHarness(feeBounds: Pick<FacilitatorConfig, "maxCompu
     );
   };
 
-  const close = () => new Promise<void>((resolve) => server_.close(() => resolve()));
+  const close = () => new Promise<void>((resolve) => server_.close(() => { rmSync(orderDirectory, { recursive: true, force: true }); resolve(); }));
 
   return {
+    orderConfig,
     svm,
     ledger,
     facilitator,

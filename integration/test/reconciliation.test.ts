@@ -143,11 +143,11 @@ describe("reconcileEntry: identifying the original transaction", () => {
 });
 
 describe("reconcileEntry: absence is never assumed", () => {
-  test("not found while the blockhash is still valid: may still land", async () => {
+  test("not found while blockhash is valid remains UNKNOWN with a closeable payment", async () => {
     const store = await storeWith({ authorize: {} });
     const reader = fakeReader({ blockhash: { kind: "ok", valid: true, slot: 50n } });
     const report = await reconcileEntry(store, reader, LOCAL_PROGRAM_ID, "fp");
-    expect(report.submissions[0]!.verdict).toBe("may-still-land");
+    expect(report.submissions[0]!.verdict).toBe("unknown");
     expect(report.conclusion).toBe("pending");
   });
 

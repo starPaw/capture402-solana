@@ -17,8 +17,6 @@ import { FileSubmissionJournal } from "./submission-journal.ts";
 import { RpcLedger, cachedClusterClock } from "./rpc-ledger.ts";
 import { TOKEN_PROGRAM_ADDRESS } from "./program.ts";
 import { AdmissionJournal, loadAdmissionContract } from './admission-journal.ts';
-import { selectedAbandonPolicies } from './authorize-abandon.ts';
-import { selectedIsolationPolicy } from './unknown-authorize-isolation.ts';
 import { e2eSponsor, requireE2eRuntimeRpc, trustedRuntimeFile } from './e2e-runtime-policy.ts';
 import { validateProfileFaucet, type FaucetPolicy } from './devnet-faucet-store.ts';
 import { devnetFaucetProxy } from './devnet-faucet-proxy.ts';
@@ -76,10 +74,6 @@ export async function startRestaurant() {
     if (e2e) requireE2eRuntimeRpc(process.env.SOLANA_RPC_URL!,record);
     const b3Recovery = e2e && process.env.SAC006_B3_RECOVERY_POLICY_PATH ? JSON.parse(trustedRuntimeFile(process.env.SAC006_B3_RECOVERY_POLICY_PATH)) : undefined;
     if (b3Recovery && JSON.stringify(b3Recovery)!==JSON.stringify(operationalValue('b3RecoveryPolicy'))) throw Error('B3 recovery policy exceeds selected operation');
-    const authorizeAbandonPolicies=e2e && process.env.SAC006_B3_AUTHORIZE_ABANDON_POLICY_PATH ? selectedAbandonPolicies(JSON.parse(trustedRuntimeFile(process.env.SAC006_B3_AUTHORIZE_ABANDON_POLICY_PATH))) : undefined;
-    const authorizeIsolationPolicy=e2e && process.env.SAC006_B3_AUTHORIZE_ISOLATION_POLICY_PATH ? JSON.parse(trustedRuntimeFile(process.env.SAC006_B3_AUTHORIZE_ISOLATION_POLICY_PATH)) : undefined;
-    if(authorizeIsolationPolicy && (Object.keys(authorizeIsolationPolicy).sort().join()!==[...Object.keys(selectedIsolationPolicy()),'archiveSha256'].sort().join() ||
-      Object.entries(selectedIsolationPolicy()).some(([k,v])=>authorizeIsolationPolicy[k]!==v) || !/^[a-f0-9]{64}$/.test(authorizeIsolationPolicy.archiveSha256)))throw Error('Unknown authorization isolation exceeds the selected original');
     const ledger = new RpcLedger({ deployment: record, network: record.network.caip2, genesisHash: record.network.genesisHash, rpcUrl: process.env.SOLANA_RPC_URL!, rpcMinIntervalMs:e2e?250:0 });
     await ledger.verifyGenesis();
     const server = await createKeyPairSignerFromBytes(Uint8Array.from(JSON.parse(readFileSync(process.env.SAC006_SERVER_KEYPAIR_PATH!, "utf8"))));
@@ -97,6 +91,7 @@ export async function startRestaurant() {
       faucet=devnetFaucetProxy(process.env.SAC006_FACILITATOR_URL!,process.env.SAC006_BEARER_TOKEN!,circle && policy.schema===2?{profileHash:profileHash(circle),mint:circle.mint,network:circle.network,treasury:circle.treasury,pool:policy.pool,amountAtomic:policy.amount}:undefined);
     }
     const config: RestaurantConfig = {
+      orderSigningKey: process.env.SAC006_BEARER_TOKEN!,
       merchantToken: process.env.SAC006_MERCHANT_TOKEN || undefined,
       facilitatorUrl: process.env.SAC006_FACILITATOR_URL!, bearerToken: process.env.SAC006_BEARER_TOKEN!, network: record.network.caip2, programId: record.programId,
       feePayer: process.env.SAC006_FEE_PAYER as Address, server, asset: process.env.SAC006_ASSET_MINT as Address, amount: BigInt(profile.budget), paymentProfile:profile,
@@ -109,8 +104,6 @@ export async function startRestaurant() {
       handler: async () => { throw new Error("payment lab uses explicit lifecycle captures"); },
       ...(e2e ? { orderAdmission:new AdmissionJournal(process.env.SAC006_E2E_ORDER_ADMISSION_DIR!,'orders',Number(process.env.SAC006_E2E_MAX_ORDERS),loadAdmissionContract('orders',circle?'circle-usdc-v1':undefined)),
         ...(b3Recovery ? {b3Recovery} : {}),
-        ...(authorizeAbandonPolicies ? {authorizeAbandonPolicies} : {}),
-        ...(authorizeIsolationPolicy ? {authorizeIsolationPolicy} : {}),
         now:() => ledger.now() } : {}),
     };
     validateProfileRuntime(profile,config);

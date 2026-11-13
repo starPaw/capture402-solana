@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
@@ -120,6 +121,23 @@ def driver(root, action):
 ENABLED = os.environ.get('CAPTURE402_SYSTEMD_TEST') == '1'
 
 
+def require_disposable_runner(test):
+    test.assertEqual(sys.platform, 'linux')
+    test.assertEqual(os.geteuid(), 0)
+    marker = Path('/etc/capture402-e2e-disposable')
+    disposable_e2e = False
+    if os.environ.get('CAPTURE402_E2E_DISPOSABLE') == '1':
+        try:
+            metadata = marker.lstat()
+            disposable_e2e = (stat.S_ISREG(metadata.st_mode) and metadata.st_uid == 0 and
+                              not metadata.st_mode & 0o022 and
+                              marker.read_text().strip() == 'DISPOSABLE_SYNTHETIC_E2E_TEST_ONLY')
+        except OSError:
+            pass
+    test.assertTrue(os.environ.get('GITHUB_ACTIONS') == 'true' or disposable_e2e,
+                    'explicit disposable CI runner or marked E2E VM required')
+
+
 @unittest.skipUnless(ENABLED, 'explicit disposable Linux systemd test required')
 class BootBoundaryTests(unittest.TestCase):
     def rename_transaction(self, fail_public=False, interrupt=False):
@@ -199,13 +217,7 @@ class BootBoundaryTests(unittest.TestCase):
         self.assertEqual(host.inventory([host.STATE, host.PRIVATE]), self.original_state)
 
     def setUp(self):
-        self.assertEqual(os.geteuid(), 0)
-        marker = Path('/etc/capture402-e2e-disposable')
-        disposable_e2e = (os.environ.get('CAPTURE402_E2E_DISPOSABLE') == '1' and
-                          marker.is_file() and marker.stat().st_uid == 0 and
-                          marker.read_text().strip() == 'DISPOSABLE_SYNTHETIC_E2E_TEST_ONLY')
-        self.assertTrue(os.environ.get('GITHUB_ACTIONS') == 'true' or disposable_e2e,
-                        'explicit disposable CI runner or marked E2E VM required')
+        require_disposable_runner(self)
         self.assertTrue(shutil.which('systemctl') and shutil.which('nginx'))
         self.tmp = tempfile.TemporaryDirectory(prefix='capture402-boot-')
         self.root = Path(self.tmp.name)
@@ -404,8 +416,7 @@ http {{ access_log off; server {{ listen 127.0.0.1:{cfg['publicPort']}; include 
 class DevFreezerTests(unittest.TestCase):
     """Actual frozen cgroups and startup condition, using synthetic idle workers."""
     def setUp(self):
-        self.assertEqual(os.geteuid(), 0)
-        self.assertEqual(os.environ.get('GITHUB_ACTIONS'), 'true', 'never run root fixtures on the VPS')
+        require_disposable_runner(self)
         self.tmp = tempfile.TemporaryDirectory(prefix='capture402-test-dev-', dir='/run')
         self.root = Path(self.tmp.name)
         self.root.chmod(0o755)
@@ -484,8 +495,7 @@ class DevFreezerTests(unittest.TestCase):
 class DevAttemptJobTests(unittest.TestCase):
     """Real transient job launch, invocation correlation and SIGKILL; synthetic preflight."""
     def setUp(self):
-        self.assertEqual(os.geteuid(), 0)
-        self.assertEqual(os.environ.get('GITHUB_ACTIONS'), 'true', 'never run on VPS')
+        require_disposable_runner(self)
         self.tmp = tempfile.TemporaryDirectory(prefix='capture402-test-attempt-', dir='/run')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)

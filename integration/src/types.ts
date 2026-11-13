@@ -71,7 +71,7 @@ export type OperationResult = {
 export const SCHEME = "auth-capture";
 
 /** The only `extra` fields of the supported profile (sorted); see integration/README.md. */
-export const EXTRA_KEYS: readonly string[] = ["captureDeadline", "feePayer", "paymentFlow", "programId", "refundDeadline"];
+export const EXTRA_KEYS: readonly string[] = ["authorizeUntilSlot", "captureDeadline", "feePayer", "orderId", "orderProof", "paymentFlow", "programId", "protocolVersion", "refundDeadline"];
 
 export const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 export const RESULT_KEY = "auth-capture";

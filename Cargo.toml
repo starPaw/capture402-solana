@@ -12,17 +12,30 @@ crate-type = ["cdylib", "lib"]
 no-entrypoint = []
 
 [dependencies]
-solana-program = "=2.2.1"
-spl-token = { version = "=8.0.0", features = ["no-entrypoint"] }
-spl-associated-token-account-client = "=2.0.0"
+solana-account-info = "=3.1.1"
+solana-address = { version = "=2.7.0", features = ["curve25519", "copy"] }
+solana-clock = "=3.2.1"
+solana-cpi = "=3.1.0"
+solana-program-entrypoint = "=3.1.1"
+solana-program-error = "=3.0.1"
+solana-program-option = "=3.1.0"
+solana-program-pack = "=3.1.0"
+solana-rent = "=4.4.0"
+solana-system-interface = { version = "=3.3.0", features = ["bincode"] }
+solana-sysvar = "=4.2.0"
+spl-token-interface = "=3.0.0"
+spl-associated-token-account-interface = "=2.0.0"
 
 [dev-dependencies]
-litesvm = "=0.6.1"
-solana-sdk = "=2.2.1"
-# LiteSVM 0.6 uses the pre-Agave-split runtime APIs. Pin that runtime family.
-solana-builtins = "=2.2.4"
-solana-compute-budget-instruction = "=2.2.4"
-solana-fee = "=2.2.4"
+# LiteSVM 0.18.2 embeds Agave 4.3; exact 4.4 validation uses the local validator.
+litesvm = "=0.18.2"
+solana-account = "=4.7.0"
+solana-instruction = "=3.5.1"
+solana-instruction-error = "=2.5.0"
+solana-keypair = "=3.1.2"
+solana-signer = "=3.0.1"
+solana-transaction = "=4.3.0"
+solana-transaction-error = "=3.4.0"
 
 [profile.release]
 overflow-checks = true

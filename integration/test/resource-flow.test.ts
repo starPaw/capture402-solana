@@ -54,7 +54,7 @@ let policy: ClientPolicy;
 const BEARER_TOKEN = "test-bearer-token";
 
 function resourceConfig(over: Partial<ResourceServerConfig> = {}): ResourceServerConfig {
-  return {
+  return { orderSigningKey: "synthetic-order-key",
     facilitatorUrl: gateway.url,
     bearerToken: BEARER_TOKEN,
     network: h.ledger.network,
@@ -151,6 +151,7 @@ describe("x402 HTTP transport", () => {
     const offer = required.accepts[0]!;
     expect(offer).toMatchObject({ scheme: "auth-capture", network: h.ledger.network, amount: "100", asset: h.mint, payTo: h.server.address });
     expect(offer.extra).toEqual({
+      protocolVersion: 2, authorizeUntilSlot: "1500", orderId: expect.stringMatching(/^[a-f0-9]{64}$/), orderProof: expect.stringMatching(/^[a-f0-9]{64}$/),
       paymentFlow: "escrow",
       captureDeadline: Number(NOW) + 120,
       refundDeadline: Number(NOW) + 720,
@@ -384,9 +385,10 @@ describe("unresolved and refused settlements keep their evidence and never compl
 
 describe("gateway: authentication and allowlist precede the facilitator", () => {
   test("a crash after metering preserves the complete handler result before terminal signing", async () => {
+    let metered=false;
     const app = await startServer(createResourceApp(resourceConfig({
-      handler: async () => ({ ok: true, amount: 37n, releaseRemainder: false }),
-      getLatestBlockhash: async () => { throw new Error("injected stop after metering"); },
+      handler: async () => { metered=true;return { ok: true, amount: 37n, releaseRemainder: false }; },
+      getLatestBlockhash: async () => { if (metered) throw new Error("injected stop after metering"); return h.lifetime(); },
     })));
     try {
       const response = await pay(app.url);

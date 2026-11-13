@@ -45,6 +45,7 @@ export type ClientPolicy = {
 
 
 export type SelectedOffer = {
+  authorizeUntilSlot: bigint;
   requirements: PaymentRequirements;
   feePayer: Address;
   maximum: bigint;
@@ -79,7 +80,10 @@ export function selectOffer(paymentRequired: PaymentRequired, policy: ClientPoli
     const refundDeadline = BigInt(extra.refundDeadline as number);
     if (!(now < captureDeadline && captureDeadline <= refundDeadline)) { fail("deadlines are not open and ordered"); continue; }
     if (captureDeadline - now > BigInt(policy.maxCaptureWindowSeconds)) { fail(`captureDeadline locks the hold longer than ${policy.maxCaptureWindowSeconds}s`); continue; }
-    return { requirements: r, feePayer: extra.feePayer, maximum, captureDeadline, refundDeadline };
+    if (extra.protocolVersion !== 2 || typeof extra.authorizeUntilSlot !== "string" || !/^(0|[1-9][0-9]*)$/.test(extra.authorizeUntilSlot)
+        || BigInt(extra.authorizeUntilSlot) >= (1n << 64n) - 1n || typeof extra.orderId !== "string" || !/^[a-f0-9]{64}$/.test(extra.orderId)
+        || typeof extra.orderProof !== "string" || !/^[a-f0-9]{64}$/.test(extra.orderProof)) { fail("invalid v2 order identity or expiry"); continue; }
+    return { requirements: r, feePayer: extra.feePayer, maximum, captureDeadline, refundDeadline, authorizeUntilSlot: BigInt(extra.authorizeUntilSlot) };
   }
   throw new Error(`no acceptable offer: ${reasons.join("; ")}`);
 }
@@ -101,6 +105,7 @@ export async function signAuthorize(payer: KeyPairSigner, offer: SelectedOffer, 
     mint: policy.asset,
     funder: offer.feePayer,
     salt,
+    authorizeUntilSlot: offer.authorizeUntilSlot,
     maximum: offer.maximum,
     captureDeadline: offer.captureDeadline,
     refundDeadline: offer.refundDeadline,

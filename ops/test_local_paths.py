@@ -60,6 +60,22 @@ class LocalPathTests(unittest.TestCase):
             self.assertEqual(len(errors), 1)
             self.assertNotIn(private, errors[0])
 
+    def test_deleted_worktree_files_and_untracked_new_sources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(['git', 'init', '-q'], cwd=root, check=True)
+            old = root / 'old.txt'
+            old.write_text('retired source')
+            subprocess.run(['git', 'add', 'old.txt'], cwd=root, check=True)
+            old.unlink()
+            private = '/' + '/'.join(('Users', 'fixture', 'file'))
+            (root / 'new.txt').write_text(private)
+            errors, count = check(root)
+            self.assertEqual(count, 1)
+            self.assertEqual(len(errors), 1)
+            self.assertNotIn(private, errors[0])
+            self.assertEqual(check(root, staged=True), ([], 1))
+
 
 if __name__ == '__main__':
     unittest.main()

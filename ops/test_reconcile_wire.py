@@ -32,8 +32,8 @@ const programId = '992QmwmwCebawRJsTCgvc8qnzGivbFaD39ZQE7VhHp7o';
 const salt = new Uint8Array(32).fill(9);
 const lifetime = { blockhash: '11111111111111111111111111111111', lastValidBlockHeight: 1n };
 const common = { programId, payer: payer.address, server: server.address, mint: mintKey.address,
-    payment: await a.paymentAddress(programId, payer.address, salt), funder: sponsor.address };
-const authorize = await t.authorizeInstruction({...common, salt, maximum:100n, captureDeadline:200n, refundDeadline:300n});
+    payment: await a.paymentAddress(programId, payer.address, salt, 1500n), funder: sponsor.address };
+const authorize = await t.authorizeInstruction({...common, salt, authorizeUntilSlot:1500n, maximum:100n, captureDeadline:200n, refundDeadline:300n});
 const capture = await t.captureInstruction(common, 1n, false, 100n, 0n);
 const instructions = { authorize, capture, void:await t.voidInstruction(common, 99n, 1n),
     refund:await t.refundInstruction(common, 1n, 99n, 1n) };

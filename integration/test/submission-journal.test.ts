@@ -24,7 +24,7 @@ afterAll(async () => {
 });
 
 const facilitatorWith = (journal: SubmissionJournal) =>
-  new Facilitator({ network: h.ledger.network, programId: h.facilitator.programId, feePayer: h.facilitatorKey, ledger: h.ledger, journal });
+  new Facilitator({ ...h.orderConfig, network: h.ledger.network, programId: h.facilitator.programId, feePayer: h.facilitatorKey, ledger: h.ledger, journal });
 
 describe("FileSubmissionJournal through Facilitator.settle", () => {
   test("restart never resubmits an unresolved original, even while state still permits it", async () => {
@@ -49,8 +49,8 @@ describe("FileSubmissionJournal through Facilitator.settle", () => {
     h.ledger.submit = async () => { broadcasts += 1; return { kind: "submitted" }; };
     try {
       const body = h.body(authorizePayload(await h.signedAuthorize({ salt: h.newSalt() })));
-      const results = await Promise.all([facilitatorWith(new FileSubmissionJournal(dir)).settle(body), facilitatorWith(new FileSubmissionJournal(dir)).settle(body)]);
-      expect(results.every(r => !r.success)).toBe(true);
+      const results = await Promise.allSettled([facilitatorWith(new FileSubmissionJournal(dir)).settle(body), facilitatorWith(new FileSubmissionJournal(dir)).settle(body)]);
+      expect(results.every(r => r.status === "rejected" || !r.value.success)).toBe(true);
       expect(broadcasts).toBe(1);
       expect(new FileSubmissionJournal(dir).list()[0]!.attempts).toHaveLength(1);
     } finally { h.ledger.submit = submit; }
@@ -159,8 +159,7 @@ describe("FileSubmissionJournal through Facilitator.settle", () => {
       resolve: () => {},
     };
     const before = h.ledger.submissions.length;
-    const res = await facilitatorWith(failing).settle(h.body(authorizePayload(await h.signedAuthorize({ salt: h.newSalt() }))));
-    expect(res).toMatchObject({ success: false, errorReason: "settlement_not_submitted", transaction: "" });
+    await expect(facilitatorWith(failing).settle(h.body(authorizePayload(await h.signedAuthorize({ salt: h.newSalt() }))))).rejects.toThrow("retain UNKNOWN");
     expect(h.ledger.submissions.length).toBe(before);
   });
 });

@@ -54,7 +54,7 @@ export async function submitReport(prepared: PreparedReport, options: {
   if (offer.feePayer === options.payer.address) throw new Error("the sponsor cannot be the payer");
   const ix = await authorizeInstruction({ programId: options.policy.programId, payer: options.payer.address,
     server: options.policy.payTo, mint: options.policy.asset, funder: offer.feePayer, salt: Buffer.from(salt, "hex"),
-    maximum: offer.maximum, captureDeadline: offer.captureDeadline, refundDeadline: offer.refundDeadline });
+    maximum: offer.maximum, captureDeadline: offer.captureDeadline, refundDeadline: offer.refundDeadline, authorizeUntilSlot: offer.authorizeUntilSlot });
   const build = { feePayer: offer.feePayer, instructions: [ix],
     lifetime: { blockhash: message.lifetimeToken as Blockhash, lastValidBlockHeight: 0n } };
   const expected = await buildTransaction({ ...build, signers: [] });

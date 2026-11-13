@@ -12,7 +12,7 @@ import { createHarness, type Harness } from "./fixture.ts";
 let h: Harness;
 beforeAll(async () => { h = await createHarness(); });
 afterAll(async () => { await h.close(); });
-const facilitator = (journal: FileSubmissionJournal) => new Facilitator({
+const facilitator = (journal: FileSubmissionJournal) => new Facilitator({ ...h.orderConfig,
   network: h.ledger.network, programId: h.facilitator.programId,
   feePayer: h.facilitatorKey, ledger: h.ledger, journal,
 });

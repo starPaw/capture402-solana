@@ -70,6 +70,7 @@ async function main(): Promise<void> {
   }
 
   const config = {
+    orderSigningKey: requireEnv("SAC006_BEARER_TOKEN"),
     facilitatorUrl,
     bearerToken: requireEnv("SAC006_BEARER_TOKEN"),
     network: record.network.caip2,

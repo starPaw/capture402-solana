@@ -25,7 +25,7 @@ def save():
 S.mkdir(parents=True);shutil.copytree('/root/p2-source/integration',S/'integration');shutil.copytree('/root/p2-source/ops',S/'ops')
 # Archives were staged separately from authenticated B1 inputs; only this disposable harness extracts them.
 with tarfile.open('/root/node.tar.xz') as t:t.extractall('/opt',filter='data')
-shutil.copytree('/opt/node-v24.20.0-linux-arm64',S/'node')
+shutil.copytree('/opt/node-v26.13.1-linux-arm64',S/'node')
 with tarfile.open('/root/installed-deps.tar.gz') as t:t.extractall(S/'integration',filter='data')
 # archive stores integration/node_modules (assert the known native Linux dependency exists).
 require((S/'integration/node_modules/fs-ext/build/Release/fs_ext.node').exists())

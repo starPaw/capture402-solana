@@ -84,7 +84,7 @@ beforeEach(async () => {
   gateway = await start(createGatewayApp(h.facilitator, { bearerToken: "report-test-bearer", allowlist: { merchant: h.server.address, mint: h.mint },
     sponsorship: new SponsorshipGuard({ ledger: h.ledger, feePayer: h.facilitatorKey.address, maxAttempts: 100, minLamportsBalance: 1n }) }));
   dir = mkdtempSync(join(tmpdir(), "capture402-paid-report-")); store = new OperationStore(dir);
-  config = { origin: ORIGIN, proofReader: reader, facilitatorUrl: gateway.url, bearerToken: "report-test-bearer", network: h.ledger.network,
+  config = { orderSigningKey: "synthetic-order-key", origin: ORIGIN, proofReader: reader, facilitatorUrl: gateway.url, bearerToken: "report-test-bearer", network: h.ledger.network,
     programId: h.facilitator.programId, feePayer: h.facilitatorKey.address, server: h.server, asset: h.mint, amount: 100n,
     captureDeadlineSeconds: 120, refundDeadlineSeconds: 600, store, now: () => h.svm.getClock().unixTimestamp,
     getLatestBlockhash: async () => h.lifetime(), handler: async () => { throw new Error("unused generic handler"); },
@@ -312,7 +312,7 @@ describe("PR #101 adversarial security gate", () => {
   });
   async function alteredUnsigned(quote: PreparedReport, change: "sponsor" | "metas" | "amount") {
     const order = store.read(quote.order)!.paidReport!;
-    const ix = await authorizeInstruction({ programId: config.programId, payer: h.payer.address,
+    const ix = await authorizeInstruction({ authorizeUntilSlot: 1500n, programId: config.programId, payer: h.payer.address,
       server: h.server.address, mint: h.mint, funder: config.feePayer,
       salt: Buffer.from(order.terms.salt, "hex"), maximum: change === "amount" ? 101n : 100n,
       captureDeadline: BigInt(order.terms.captureDeadline), refundDeadline: BigInt(order.terms.refundDeadline) });
@@ -462,11 +462,13 @@ describe("PR #101 adversarial security gate", () => {
   });
   test("hard process exit after capture25 retains all original signatures and blocks restart economics", async () => {
     const worker = fileURLToPath(new URL("./fixtures/paid-report-crash-worker.ts", import.meta.url));
+    let stderr = "";
     const exit = await new Promise<number | null>((resolve, reject) => {
-      const child = spawn(process.execPath, ["--experimental-transform-types", worker, dir], { stdio: "ignore", timeout: 15_000 });
+      const child = spawn(process.execPath, ["--experimental-strip-types", worker, dir], { stdio: ["ignore", "ignore", "pipe"], timeout: 15_000 });
+      child.stderr.on("data", bytes => { stderr += bytes; });
       child.on("error", reject); child.on("exit", resolve);
     });
-    expect(exit).toBe(73);
+    expect(exit, stderr).toBe(73);
     const quote: PreparedReport = JSON.parse(readFileSync(join(dir, "crash-prepared"), "utf8"));
     const before = store.read(quote.order)!;
     expect(before.paidReport!.state).toBe("running");

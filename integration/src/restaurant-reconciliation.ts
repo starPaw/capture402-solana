@@ -17,8 +17,8 @@ const ACTIONS = ["authorize", "beer", "salmon", "finish", "void", "refund", "rec
 type Action = typeof ACTIONS[number];
 type Event = { action: Action; amount: string; status: string; transaction: string; transactionBase64: string; receipt?: { transaction?: string; success?: boolean } };
 type Order = { id: string; status: string; payer: Address; payment: Address; unsigned: string; reclaimUnsigned?: string; events: Event[];
-  required: { accepts: { network: string; payTo: Address; asset: Address; amount: string; extra: { captureDeadline: number | string; refundDeadline: number | string } }[] } };
-type Identity = { payer: Address; payment: Address; server: Address; mint: Address; maximum: bigint; captureDeadline: bigint; refundDeadline: bigint; sponsor?: Address; authorizeMessageHash?: string };
+  required: { accepts: { network: string; payTo: Address; asset: Address; amount: string; extra: { protocolVersion:2; authorizeUntilSlot:string; feePayer:Address; captureDeadline: number | string; refundDeadline: number | string } }[] } };
+type Identity = { authorizeUntilSlot:bigint; rentRefundRecipient:Address; payer: Address; payment: Address; server: Address; mint: Address; maximum: bigint; captureDeadline: bigint; refundDeadline: bigint; sponsor?: Address; authorizeMessageHash?: string };
 type Wire = { bytes: Uint8Array; wireSha256: string; messageHash: string; blockhash: string; signature?: string; fullySigned: boolean; operation: string; expectedBalances?: { held: string; refundable: string } };
 export type RestaurantActionEvidence = {
   action: Action; sources: ("order" | "action-lock")[]; amount?: string; orderStatus?: string; lockStatus?: string;
@@ -157,7 +157,7 @@ async function decodeWire(wire: string, identity: Identity, programId: Address, 
   if (accounts[0] !== authority || accounts[op.op === "authorize" ? 2 : 1] !== identity.payment ||
       accounts[op.op === "authorize" ? 3 : 2] !== identity.mint || op.op === "authorize" && accounts[1] !== identity.server) throw new Error("identity mismatch");
   if (op.op === "authorize" && (op.maximum !== identity.maximum || op.captureDeadline !== identity.captureDeadline ||
-      op.refundDeadline !== identity.refundDeadline || await paymentAddress(programId, identity.payer, op.salt) !== identity.payment ||
+      op.refundDeadline !== identity.refundDeadline || op.authorizeUntilSlot !== identity.authorizeUntilSlot || await paymentAddress(programId, identity.payer, op.salt, op.authorizeUntilSlot) !== identity.payment ||
       BigInt(amount) !== op.maximum)) throw new Error("authorization mismatch");
   if (op.op === "authorize" && identity.authorizeMessageHash && messageHash(bytes) !== identity.authorizeMessageHash) throw new Error("offered authorization mismatch");
   if ((op.op === "capture" || op.op === "refund") && op.amount !== BigInt(amount) ||
@@ -189,10 +189,10 @@ export async function reconcileRestaurantOrder(options: RestaurantReconcileOptio
     order = parseJson(options.recoveryPreimage ?? local.get(`${orderId}.json`)!) as Order;
     const accepted = order.required.accepts[0]!;
     if (order.id !== orderId || !isAddress(order.payer) || !isAddress(order.payment) || !isAddress(accepted.payTo) ||
-        !isAddress(accepted.asset) || accepted.network !== network || accepted.amount !== "100000000" ||
+        !isAddress(accepted.asset) || accepted.extra.protocolVersion !== 2 || !decimal(accepted.extra.authorizeUntilSlot) || !isAddress(accepted.extra.feePayer) || accepted.network !== network || accepted.amount !== "100000000" ||
         !["draft", "active", "closed", "pending", "rejected"].includes(order.status) ||
         !Array.isArray(order.events) || order.events.length > ACTIONS.length || !order.events.every(event)) throw new Error("order invalid");
-    identity = { payer: order.payer, payment: order.payment, server: accepted.payTo, mint: accepted.asset,
+    identity = { authorizeUntilSlot:BigInt(accepted.extra.authorizeUntilSlot),rentRefundRecipient:accepted.extra.feePayer,payer: order.payer, payment: order.payment, server: accepted.payTo, mint: accepted.asset,
       maximum: BigInt(accepted.amount), captureDeadline: BigInt(accepted.extra.captureDeadline), refundDeadline: BigInt(accepted.extra.refundDeadline) };
     const offered = await decodeWire(order.unsigned, identity, programId, "authorize", accepted.amount, false);
     identity.authorizeMessageHash = offered.messageHash;
@@ -365,10 +365,10 @@ export async function reconcileRestaurantOrder(options: RestaurantReconcileOptio
       if (!read.account) payment = { kind: "ok", slot: read.slot.toString(), exists: false };
       else {
         const p = decodePayment(read.account.data);
-        if (!p || read.account.owner !== programId || read.account.executable || p.payer !== identity.payer ||
+        if (!p || read.account.owner !== programId || read.account.executable || p.authorizeUntilSlot !== identity.authorizeUntilSlot || p.rentRefundRecipient !== identity.rentRefundRecipient || p.payer !== identity.payer ||
             p.server !== identity.server || p.mint !== identity.mint || p.maximum !== identity.maximum ||
             p.captureDeadline !== identity.captureDeadline || p.refundDeadline !== identity.refundDeadline ||
-            await paymentAddress(programId, p.payer, p.salt) !== identity.payment) issues.push("finalized payment identity mismatch");
+            await paymentAddress(programId, p.payer, p.salt, p.authorizeUntilSlot) !== identity.payment) issues.push("finalized payment identity mismatch");
         else payment = { kind: "ok", slot: read.slot.toString(), exists: true, held: p.held.toString(), refundable: p.refundable.toString() };
       }
     }

@@ -29,8 +29,6 @@ import { b3RecoveryEvidence, type B3Recovery } from './b3-recovery.ts';
 import type { RpcLedger } from './rpc-ledger.ts';
 import { proveExpiredReclaimConsent } from './reclaim-consent-renewal.ts';
 import { currentReclaimGeneration, nextReclaimArchive } from './reclaim-generations.ts';
-import { abandonmentCustody, abandonmentEvidence, proveExpiredUnfundedAuthorize, sha256, type AuthorizeAbandonPolicy } from './authorize-abandon.ts';
-import { authorizeIsolationEvidence, type InstalledIsolationPolicy } from './unknown-authorize-isolation.ts';
 import type { FaucetProxy } from './devnet-faucet-proxy.ts';
 import {MerchantDemoConsent,type MerchantDemoScope} from './merchant-demo.ts';
 import { OrderSessionAccess, type OrderSessionScope } from './order-session.ts';
@@ -42,7 +40,7 @@ type Scenario = typeof SCENARIOS[number];
 type Action = "authorize" | "beer" | "salmon" | "finish" | "void" | "refund" | "reclaim" | "atomic";
 type Event = { lifetimeObservation?: LifetimeObservation; action: Action; label: string; amount: string; at: string; status: "prepared" | "pending" | "finalized" | "rejected"; transaction: string; transactionBase64: string; receipt?: SettleResponse };
 type Order = { authorizeLifetime?: LifetimeObservation; id: string; capabilityHash: string; payer: Address; payment: Address; scenario: Scenario; required: PaymentRequired; unsigned: string; createdAt: number; status: "draft" | "active" | "closed" | "pending" | "rejected"; events: Event[]; reclaimUnsigned?: string; reclaimLifetime?: { blockhash: string; lastValidBlockHeight: string; blockhashSlot?: string } };
-export type RestaurantConfig = ResourceServerConfig & { ledger: Ledger & Pick<ChainReader, "getSignatureStatus"> & Pick<RpcLedger,"getAccountAtLeast"> & {offerBlockhashValid?: (hash: string) => Promise<boolean>; getClockAtLeast?:RpcLedger['getClockAtLeast']; getFinalizedBlockhashStatus?:RpcLedger['getFinalizedBlockhashStatus']; quoteTransactionFee?:RpcLedger['quoteTransactionFee']}; orders: RestaurantOrders; reclaimJournal: SubmissionJournal; origin: string; merchantToken?: string; publicMerchantDemo?:boolean; orderAdmission?: AdmissionJournal; b3Recovery?:B3Recovery; authorizeAbandonPolicy?:AuthorizeAbandonPolicy; authorizeAbandonPolicies?:readonly AuthorizeAbandonPolicy[]; authorizeIsolationPolicy?:InstalledIsolationPolicy; faucet?:FaucetProxy; paymentProfile?:PaymentProfile;verifyEconomicIdentity?:()=>Promise<void> };
+export type RestaurantConfig = ResourceServerConfig & { ledger: Ledger & Pick<ChainReader, "getSignatureStatus"> & Pick<RpcLedger,"getAccountAtLeast"> & {offerBlockhashValid?: (hash: string) => Promise<boolean>; getClockAtLeast?:RpcLedger['getClockAtLeast']; getFinalizedBlockhashStatus?:RpcLedger['getFinalizedBlockhashStatus']; quoteTransactionFee?:RpcLedger['quoteTransactionFee']}; orders: RestaurantOrders; reclaimJournal: SubmissionJournal; origin: string; merchantToken?: string; publicMerchantDemo?:boolean; orderAdmission?: AdmissionJournal; b3Recovery?:B3Recovery; faucet?:FaucetProxy; paymentProfile?:PaymentProfile;verifyEconomicIdentity?:()=>Promise<void> };
 
 export class RestaurantOrders {
   readonly dir: string;
@@ -50,7 +48,7 @@ export class RestaurantOrders {
   constructor(dir: string, coordination = domainFromEnvironment()) { this.dir = dir; this.coordination = coordination; coordination?.assertMember(dir); ensureDurableDirectory(dir); }
   assertAccess(): void { assertStoreAccess(this.dir, this.coordination); }
   path(id: string): string { if (!/^[a-f0-9]{32}$/.test(id)) throw new Error("invalid order ID"); return join(this.dir, `${id}.json`); }
-  read(id: string): Order { assertStoreAccess(this.dir, this.coordination); return JSON.parse(readFileSync(this.path(id), "utf8")) as Order; }
+  read(id: string): Order { assertStoreAccess(this.dir, this.coordination); const order = JSON.parse(readFileSync(this.path(id), "utf8")) as Order; if (order.required?.accepts?.[0]?.extra?.protocolVersion !== 2) throw Error("Unsupported stored order; preserve journal and UNKNOWN"); return order; }
   create(order: Order): void { assertStoreAccess(this.dir, this.coordination); createDurableFile(this.path(order.id), JSON.stringify(order)); }
   write(order: Order): void { assertStoreAccess(this.dir, this.coordination); replaceDurableFile(this.path(order.id), JSON.stringify(order)); }
   reserve(id: string, action: Action): void { assertStoreAccess(this.dir, this.coordination);
@@ -262,8 +260,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
     if(!demoConsent)return;
     for(const name of readdirSync(c.orders.dir).filter(n=>/^[a-f0-9]{32}\.json$/.test(n))) {
       const original=c.orders.read(name.slice(0,32));
-      if(original.id!==except && (original.status==='pending' || c.orders.busy(original.id)) &&
-        !authorizeIsolationEvidence(c.authorizeIsolationPolicy,original,c.orders.path(original.id)))throw new RestaurantRefusal('Original demo operation pending or unknown; new economics stopped.');
+      if(original.id!==except && (original.status==='pending' || c.orders.busy(original.id)))throw new RestaurantRefusal('Original demo operation pending or unknown; new economics stopped.');
     }
   }
   app.use("*", bodyLimit({ maxSize: 32_768, onError: ctx => ctx.json({ error: "request too large" }, 413) }));
@@ -298,7 +295,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
         for(const name of readdirSync(c.orders.dir).filter(n=>/^[a-f0-9]{32}\.json$/.test(n))) {
           const original=c.orders.read(name.slice(0,32));
           if(original.status==='pending' || c.orders.busy(original.id)) {
-            if(!authorizeIsolationEvidence(c.authorizeIsolationPolicy,original,c.orders.path(original.id)))return ctx.json({error:'Original demo operation pending or unknown; new token claims stopped.'},409);
+            return ctx.json({error:'Original demo operation pending or unknown; new token claims stopped.'},409);
           }
         }
       }
@@ -321,7 +318,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
         return new Response(response.body,{status:response.status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'}});
       } catch {return new Response(JSON.stringify({error:'Test-token response unavailable. Inspect the original request; do not repeat it.'}),{status:503,headers:{'Content-Type':'application/json','Cache-Control':'no-store'}});}
     };
-    app.get('/api/faucet/status',ctx=>{const recipient=ctx.req.query('recipient');if(recipient && !isAddress(recipient))return ctx.json({error:'invalid recipient'},400);return forward(recipient?`/status?recipient=${recipient}`:'/status','GET');});
+    app.get('/api/faucet/status',async ctx=>{const recipient=ctx.req.query('recipient');if(recipient && !isAddress(recipient))return ctx.json({error:'invalid recipient'},400);return forward(recipient?`/status?recipient=${recipient}`:'/status','GET');});
     app.post('/api/faucet/challenge',async ctx=>forward('/challenge','POST',await ctx.req.json()));
     app.post('/api/faucet/claim',async ctx=>forward('/claim','POST',await ctx.req.json()));
     app.get('/api/faucet/claims/:id',ctx=>forward(`/claims/${ctx.req.param('id')}`,'GET'));
@@ -335,11 +332,6 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
   function retainedReclaimGeneration(order:Order) {
     return currentReclaimGeneration(c.orders.path(order.id),order,
       wire=>c.reclaimJournal.findByMessageHash(messageHash(decode(wire).messageBytes)).length > 0);
-  }
-  function abandonPolicy(order:Order) {
-    const policies=[...(c.authorizeAbandonPolicies??[]),...(c.authorizeAbandonPolicy?[c.authorizeAbandonPolicy]:[])].filter(p=>p.order===order.id);
-    if(policies.length>1) throw Error('Duplicate selected abandonment policy');
-    return policies[0];
   }
   async function view(order: Order) {
     // One fresh observation per original signature in this response, shared by
@@ -357,11 +349,6 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
     if(funding?.reason)reasons.reclaim=funding.reason;
     if (!reasons.refund && (balances.merchant.amount === null || balances.merchant.amount < money(refundAmount(c, order, p!)))) reasons.refund = balances.merchant.reason || "Merchant test-token balance cannot fund this refund.";
     const path=c.orders.path(order.id);
-    const abandoned=abandonmentEvidence(abandonPolicy(order),order,path);
-    const isolated=authorizeIsolationEvidence(c.authorizeIsolationPolicy,order,path);
-    if(isolated && p)throw Error('Isolated original now has a payment; continuation stopped.');
-    if(abandoned && p) throw Error('Abandoned identity now has a payment; continuation stopped.');
-    const successorReserved=!!(abandoned || isolated) && existsSync(`${path}.authorize-successor.lock`);
     const generation=retainedReclaimGeneration(order);
     const consentUsed=!!generation && (existsSync(`${path}.reclaim-consent-${digest(generation.newUnsigned)}.lock`) ||
       c.reclaimJournal.findByMessageHash(messageHash(decode(generation.newUnsigned).messageBytes)).length > 0);
@@ -371,10 +358,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
       reclaimGeneration: generation ? digest(generation.newUnsigned) : undefined,
       reclaimDraftState: generation ? consentUsed || blocked || c.orders.attempted(order.id,'reclaim') || order.events.some(e=>e.action==='reclaim') ? 'stopped' : draftValid === true ? 'ready' : draftValid === false ? 'expired-or-unavailable' : 'stopped' : undefined,
       reclaimPreparation: !blocked && !reasons.reclaim && existsSync(`${path}.reclaim-consent.lock`) && !consentUsed && !order.events.some(e=>e.action==='reclaim') && (!generation || draftValid === false),
-      authorizeAbandoned: abandoned,
-      authorizeIsolation:isolated && !successorReserved ? isolated : undefined,
-      authorizeAbandonEligible: !blocked && !p && !abandoned && now>=BigInt(order.required.accepts[0]!.extra!.refundDeadline as number) && !!abandonmentCustody(abandonPolicy(order),order,path),
-      status: blocked || successorReserved ? "pending" : abandoned ? 'abandoned' : p ? p.held === 0n ? "closed" : "active" : order.status,
+      status: blocked ? "pending" : p ? p.held === 0n ? "closed" : "active" : order.status,
       authorized: p ? money(p.maximum) : 0, captured: money(captured), remaining: p ? money(p.held) : 0, refunded: money(refunded), released: p ? money(p.maximum - p.held - captured) : 0,
       heldBaseUnits: p?.held.toString(), refundableBaseUnits: p?.refundable.toString(),
       captureDeadline: Number(order.required.accepts[0]!.extra!.captureDeadline), refundDeadline: Number(order.required.accepts[0]!.extra!.refundDeadline), now: Number(now),
@@ -382,7 +366,7 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
       // Present historical events with current payment terms; never rewrite retained custody.
       events: await Promise.all(order.events.map(async e => ({ action: e.action, label: labels[e.action] ?? "Payment operation", amount: money(BigInt(e.amount)), at: e.at, status: e.status, signature: e.transaction, ...(e.transaction ? { chainStatus: await publicSignatureStatus(e.transaction,observations.get(e.transaction)) } : {}) }))),
       ...(b3RecoveryEvidence(c.b3Recovery,order,c.orders.path(order.id),blocked) ? {b3Recovery:b3RecoveryEvidence(c.b3Recovery,order,c.orders.path(order.id),blocked)} : {}),
-      ...(order.status === "draft" && !abandoned ? { required: order.required, unsigned: order.unsigned } : {}),
+      ...(order.status === "draft" ? { required: order.required, unsigned: order.unsigned } : {}),
     };
   }
   async function recordResult(order: Order, event: Event, receipt: SettleResponse | undefined, kind: "succeeded" | "rejected" | "unresolved") {
@@ -408,42 +392,21 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
     const { payer, scenario = "normal" } = body as { payer?: unknown; scenario?: unknown };
     if (typeof payer !== "string" || !isAddress(payer) || typeof scenario !== "string" || !(SCENARIOS as readonly string[]).includes(scenario)) return ctx.json({ error: "connect a Solana wallet and select a demo scenario" }, 400);
     const previous = getCookie(ctx, cookieName);
-    let abandonedPredecessor:string|undefined;
     if (previous?.includes(".")) {
       {
         const old = owned(previous.split(".")[0]!, previous);
         const p = await restaurantSnapshot(c, old);
-        const abandoned=abandonmentEvidence(abandonPolicy(old),old,c.orders.path(old.id));
-        const isolated=authorizeIsolationEvidence(c.authorizeIsolationPolicy,old,c.orders.path(old.id));
-        if(isolated) {
-          if(payer!==old.payer)return ctx.json({error:'Selected original payer required for its one explicit successor.'},409);
-          if(!c.ledger.getFinalizedBlockhashStatus)throw Error('Fresh canonical isolation evidence unavailable.');
-          const expiry=await c.ledger.getFinalizedBlockhashStatus(old.authorizeLifetime!.blockhash,BigInt(isolated.proof.originSlot),Date.now()+10000);
-          if(expiry.kind!=='ok' || expiry.valid || expiry.slot<BigInt(isolated.proof.expirySlot))throw Error('Fresh canonical original expiry unavailable.');
-          const fenced=await c.ledger.getAccountAtLeast(old.payment,expiry.slot,Date.now()+10000);
-          if(fenced.kind!=='ok' || fenced.slot<expiry.slot || fenced.account!==null)throw Error('Original successful authorization cannot be excluded.');
-          const status=await c.ledger.getSignatureStatus(isolated.originalSignature);
-          if(status.kind==='found' && (status.commitment!=='finalized' || status.err===null))throw Error('Original signature contradicts isolation; inspect it.');
-        }
-        if(abandoned || isolated) {
-          if(payer!==old.payer)return ctx.json({error:'Original payer required for its one explicit successor.'},409);
-          if(p || existsSync(`${c.orders.path(old.id)}.authorize-successor.lock`)) return ctx.json({error:'Original successor or payment already reserved; inspect it without replacement.'},409);
-          abandonedPredecessor=old.id;
-        }
-        if (!isolated && (c.orders.busy(old.id) || old.status === "pending") || (p && p.held > 0n)) return ctx.json({ error: "finish or reconcile the existing budget before opening another" }, 409);
-        if (old.status === "draft" && !abandoned && (existsSync(`${c.orders.path(old.id)}.wallet-consent.lock`) || old.events.length !== 0 || await c.now() < BigInt(old.required.accepts[0]!.extra!.captureDeadline as number))) return ctx.json({ error: "Original unsigned offer is still valid or has an attempt; inspect it before replacement." }, 409);
+        if (c.orders.busy(old.id) || old.status === "pending" || (p && p.held > 0n)) return ctx.json({ error: "finish or reconcile the existing budget before opening another" }, 409);
+        if (old.status === "draft" && (existsSync(`${c.orders.path(old.id)}.wallet-consent.lock`) || old.events.length !== 0 || await c.now() < BigInt(old.required.accepts[0]!.extra!.captureDeadline as number))) return ctx.json({ error: "Original unsigned offer is still valid or has an attempt; inspect it before replacement." }, 409);
       }
     }
     const id = randomBytes(16).toString("hex"); const capability = `${id}.${randomBytes(32).toString("hex")}`;
-    const salt = randomBytes(32); const requirements = await freshRequirements(c);
+    const salt = randomBytes(32); const requirements = await freshRequirements(c, id);
     const balance = await tokenBalance(c, payer);
     if (balance.amount === null || balance.amount < money(c.amount)) return ctx.json({ error: balance.reason || `Payer needs ${money(c.amount)} ${profile.assetLabel}; operator funding required. No authorization submitted.` }, 402);
     const required: PaymentRequired = { x402Version: 2, resource: { url: `${c.origin}/resource`, description: `Capture402 · ${money(c.amount)} ${profile.assetLabel} Devnet budget`, mimeType: "application/json" }, accepts: [requirements] };
-    const tx = await buildDemoTransaction({ feePayer: c.feePayer, signers: [], lifetime: await c.getLatestBlockhash(), instructions: [await authorizeInstruction({ programId: c.programId, payer, server: c.server.address, mint: c.asset, funder: c.feePayer, salt, maximum: c.amount, captureDeadline: BigInt(requirements.extra!.captureDeadline as number), refundDeadline: BigInt(requirements.extra!.refundDeadline as number) })] }, c.ledger);
-    const order: Order = { id, capabilityHash: digest(capability), payer, payment: await paymentAddress(c.programId, payer, salt), scenario: scenario as Scenario, required, unsigned: encodeTransaction(tx), authorizeLifetime: transactionObservation(tx), createdAt: Number(await c.now()), status: "draft", events: [] };
-    // One durable successor intent before admission/publication. Concurrent POSTs
-    // cannot consume two extra A slots; crash/lost response never creates another.
-    if(abandonedPredecessor) createDurableFile(`${c.orders.path(abandonedPredecessor)}.authorize-successor.lock`,JSON.stringify({schema:1,previousOrder:abandonedPredecessor,nextOrder:id}));
+    const tx = await buildDemoTransaction({ feePayer: c.feePayer, signers: [], lifetime: await c.getLatestBlockhash(), instructions: [await authorizeInstruction({ programId: c.programId, payer, server: c.server.address, mint: c.asset, funder: c.feePayer, salt, authorizeUntilSlot: BigInt(requirements.extra!.authorizeUntilSlot as string), maximum: c.amount, captureDeadline: BigInt(requirements.extra!.captureDeadline as number), refundDeadline: BigInt(requirements.extra!.refundDeadline as number) })] }, c.ledger);
+    const order: Order = { id, capabilityHash: digest(capability), payer, payment: await paymentAddress(c.programId, payer, salt, BigInt(requirements.extra!.authorizeUntilSlot as string)), scenario: scenario as Scenario, required, unsigned: encodeTransaction(tx), authorizeLifetime: transactionObservation(tx), createdAt: Number(await c.now()), status: "draft", events: [] };
     c.orderAdmission?.reserve(); // Durable cap before offer publication/wallet signing; never refunded.
     c.orders.create(order);
     setCookie(ctx, cookieName, capability, { httpOnly: true, secure: secured, sameSite: "Strict", path: "/", maxAge: 86400 });
@@ -516,25 +479,6 @@ export function createRestaurantApp(c: RestaurantConfig): Hono {
       const marker=renewed ? `reclaim-consent-${digest(unsigned)}` : reclaim?'reclaim-consent':'wallet-consent';
       createDurableFile(`${c.orders.path(order.id)}.${marker}.lock`,JSON.stringify({order:order.id,unsignedSha256:body.unsignedSha256}));
       return ctx.json({reserved:true});
-    } finally {c.orders.unlock(order.id);}
-  });
-  app.post('/api/orders/:id/abandon-authorize',async ctx => {
-    let order=owned(ctx.req.param('id'),getCookie(ctx,cookieName));
-    if(await ctx.req.text()!=='')return ctx.json({error:'No supplied wire, terms or proof accepted.'},400);
-    c.orders.reserve(order.id,'authorize');
-    try {
-      order=c.orders.read(order.id);
-      const path=c.orders.path(order.id),policy=abandonPolicy(order),custody=abandonmentCustody(policy,order,path);
-      if(!custody || existsSync(`${path}.authorize-abandon.lock`) || !c.ledger.getFinalizedBlockhashStatus || !c.ledger.getClockAtLeast ||
-        c.store.list().some(e=>e.authorize?.payment===order.payment || e.terminal?.payment===order.payment) ||
-        c.reclaimJournal.findByMessageHash(messageHash(decode(order.unsigned).messageBytes)).length) return ctx.json({error:'Selected original custody is not an unused draft; preserve it.'},409);
-      const proof=await proveExpiredUnfundedAuthorize({order,programId:c.programId,server:c.server.address,mint:c.asset,funder:c.feePayer,network:c.network,maximum:c.amount,
-        captureDeadline:BigInt(order.required.accepts[0]!.extra!.captureDeadline as number),refundDeadline:BigInt(order.required.accepts[0]!.extra!.refundDeadline as number),
-        reader:{getAccountAtLeast:(...args)=>c.ledger.getAccountAtLeast(...args),getFinalizedBlockhashStatus:(...args)=>c.ledger.getFinalizedBlockhashStatus!(...args),getClockAtLeast:(...args)=>c.ledger.getClockAtLeast!(...args)}});
-      // The one fsynced immutable classification is the entire commit. The original
-      // order, wire, deadlines and consent are never mutated. Partial files block.
-      createDurableFile(`${path}.authorize-abandon.lock`,JSON.stringify({schema:1,policySha256:sha256(JSON.stringify(policy)),...custody,proof}));
-      return ctx.json({abandoned:true,proof});
     } finally {c.orders.unlock(order.id);}
   });
   app.post("/resource", async ctx => {

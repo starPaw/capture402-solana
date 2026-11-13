@@ -60,7 +60,7 @@ async function wire(raw: string, program: string, signed: boolean): Promise<Wire
   check(h.numSignerAccounts === (reclaim ? 1 : 2));
   const payment = accounts[auth ? 2 : 1]!; base58(payment);
   const payer = auth || reclaim ? accounts[0]! : undefined;
-  if (auth) check(accounts[0] === keys[1] && await abi.paymentAddress(program as kit.Address, payer as kit.Address, op.salt) === payment);
+  if (auth) check(accounts[0] === keys[1] && await abi.paymentAddress(program as kit.Address, payer as kit.Address, op.salt, op.authorizeUntilSlot) === payment);
   else check(accounts[0] === keys[reclaim ? 0 : 1]);
   // Full account/role bindings for signed journals are checked below with retained payer.
   check("lifetimeToken" in m);
@@ -231,10 +231,10 @@ export async function project(input: unknown) {
     list(req.accepts, 1); check(req.accepts.length === 1); const terms = req.accepts[0];
     object(terms, ["scheme", "network", "amount", "asset", "payTo", "maxTimeoutSeconds", "extra"]);
     check(terms.scheme === "auth-capture" && terms.network === network); decimal(terms.amount); base58(terms.asset); base58(terms.payTo); check(Number.isSafeInteger(terms.maxTimeoutSeconds) && terms.maxTimeoutSeconds > 0);
-    object(terms.extra, ["captureDeadline", "feePayer", "paymentFlow", "programId", "refundDeadline"]); check(terms.extra.programId === program && terms.extra.paymentFlow === "escrow"); base58(terms.extra.feePayer);
+    object(terms.extra, ["authorizeUntilSlot", "captureDeadline", "feePayer", "orderId", "orderProof", "paymentFlow", "programId", "protocolVersion", "refundDeadline"]); check(terms.extra.protocolVersion === 2 && terms.extra.programId === program && terms.extra.paymentFlow === "escrow"); decimal(terms.extra.authorizeUntilSlot); hex(terms.extra.orderId); hex(terms.extra.orderProof); base58(terms.extra.feePayer);
     check(Number.isSafeInteger(terms.extra.captureDeadline) && terms.extra.captureDeadline > 0 && Number.isSafeInteger(terms.extra.refundDeadline) && terms.extra.refundDeadline >= terms.extra.captureDeadline);
     const unsigned = await wire(r.unsigned, program, false); await bind(unsigned, { operation: "authorize", payer: r.payer, payment: r.payment, expectedHeld: "0", expectedRefundable: "0" }, program); check(unsigned.op.op === "authorize");
-    check(unsigned.op.maximum.toString() === terms.amount && unsigned.op.captureDeadline === BigInt(terms.extra.captureDeadline) && unsigned.op.refundDeadline === BigInt(terms.extra.refundDeadline) && unsigned.message.staticAccounts[0] === terms.extra.feePayer);
+    check(unsigned.op.authorizeUntilSlot.toString() === terms.extra.authorizeUntilSlot && unsigned.op.maximum.toString() === terms.amount && unsigned.op.captureDeadline === BigInt(terms.extra.captureDeadline) && unsigned.op.refundDeadline === BigInt(terms.extra.refundDeadline) && unsigned.message.staticAccounts[0] === terms.extra.feePayer);
     const ix = unsigned.message.instructions.find(i => unsigned.message.staticAccounts[i.programAddressIndex] === program)!;
     check(unsigned.message.staticAccounts[ix.accountIndices![1]!] === terms.payTo && unsigned.message.staticAccounts[ix.accountIndices![3]!] === terms.asset);
     if (r.authorizeLifetime !== undefined) observation(r.authorizeLifetime, unsigned, network);

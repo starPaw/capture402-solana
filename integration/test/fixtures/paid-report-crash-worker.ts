@@ -11,8 +11,8 @@ import type { FinalizedTransactionEvidence, TokenObservation } from "../../src/p
 import { TOKEN_PROGRAM_ADDRESS } from "../../src/program.ts";
 import { encodeTransaction } from "../../src/transactions.ts";
 
-// The existing test harness has TS parameter properties and source .js specifiers.
-// The child uses Node's transform-types flag; resolve only its relative TS imports.
+// Node strips erasable types directly; resolve the harness's relative .js specifiers
+// to their source .ts files without relying on the removed transform-types flag.
 registerHooks({ resolve(specifier, context, nextResolve) {
   try { return nextResolve(specifier, context); }
   catch (error) {
@@ -42,7 +42,7 @@ h.ledger.submit = async tx => {
   return result;
 };
 const origin = "http://crash-report.test";
-const config = { origin, store: new OperationStore(dir), network: h.ledger.network, programId: h.facilitator.programId,
+const config = { orderSigningKey: "synthetic-order-key", origin, store: new OperationStore(dir), network: h.ledger.network, programId: h.facilitator.programId,
   feePayer: h.facilitatorKey.address, server: h.server, asset: h.mint, amount: 100n,
   captureDeadlineSeconds: 120, refundDeadlineSeconds: 600, facilitatorUrl: h.url, bearerToken: "local-only",
   getLatestBlockhash: async () => h.lifetime(), now: () => h.svm.getClock().unixTimestamp,

@@ -1010,7 +1010,7 @@ check(indices.length === slots.length && indices.every((n, i) => {
     return keys[n] === s.address && signer === s.signer && writable === s.writable;
 }));
 if (authorize) {
-    check(e.payer === keys[1] && await abi.paymentAddress(program, e.payer, op.salt) === e.payment);
+    check(e.payer === keys[1] && await abi.paymentAddress(program, e.payer, op.salt, op.authorizeUntilSlot) === e.payment);
     check(e.expectedHeld === '0' && e.expectedRefundable === '0');
 } else {
     check(e.expectedHeld === op.expectedHeld.toString() && e.expectedRefundable === op.expectedRefundable.toString());
